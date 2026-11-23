@@ -2,8 +2,13 @@ name: ci
 
 on:
   push:
-    branches: ['**']
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
   pull_request:
+    branches:
+      - main
   release:
     types: [published]
 
@@ -15,10 +20,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: vlang/setup-v@v1
-        with:
-          version: latest
+      - uses: actions/checkout@v5
+      - uses: vlang/setup-v@v1.7
       - run: v fmt -verify .
       - run: v vet .
       - run: v test .
