@@ -730,6 +730,27 @@ fn test_put_path_with_spaces_and_tabs() {
 	assert percent_decode_path(meta.original_path) or { '' } == file
 }
 
+fn test_put_ids_are_monotonic() {
+	root := core_dir('ids_monotonic')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	mut ids := []string{}
+	for i in 0 .. 100 {
+		file := os.join_path(root, 'f${i}.txt')
+		core_write(file, 'x')
+		ids << core_put(store, file, false).id
+	}
+	for i in 1 .. ids.len {
+		assert ids[i - 1] < ids[i]
+	}
+	// Newest items must sort first, so `restore last` picks the last put.
+	entries := store.scan().entries
+	assert entries[0].id == ids.last()
+	assert entries.last().id == ids[0]
+}
+
 fn test_percent_path_rejects_nul() {
 	mut failed := false
 	percent_decode_path('/a%00b') or { failed = true }

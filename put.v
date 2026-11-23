@@ -37,7 +37,7 @@ fn (s Store) create_item_dir_opts(sync bool) !(string, string) {
 		return invalid_target_error('items directory must not be a symlink')
 	}
 	for _ in 0 .. 100 {
-		id := s.id_gen()
+		id := s.next_id()
 		dir := s.item_dir(id)
 		os.mkdir(dir, mode: 0o700) or {
 			if os.exists(dir) {

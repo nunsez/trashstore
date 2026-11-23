@@ -69,7 +69,7 @@ fn (s Store) purge_one_locked(entry Entry) ! {
 			s.remove_marker_opts(marker, false)
 		}
 	}
-	dest := os.join_path(s.gc_dir(), '${entry.id}-${s.id_gen()}')
+	dest := os.join_path(s.gc_dir(), '${entry.id}-${s.next_id()}')
 	fsx.rename_noreplace(s.item_dir(entry.id), dest)!
 	renamed = true
 	failpoint('purge:after-rename')!

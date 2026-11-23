@@ -39,8 +39,19 @@ pub:
 	root string
 	sync bool
 mut:
-	id_gen IdGen = rand.uuid_v7
-	clock  Clock = time.now
+	id_gen     ?IdGen
+	id_session &rand.UUIDSession = &rand.UUIDSession{}
+	clock      Clock             = time.now
+}
+
+// next_id returns a new item id. Injected generators take precedence; the
+// default UUIDv7 session keeps ids monotonic within the same millisecond, so
+// lexicographic ordering reflects creation order.
+fn (s Store) next_id() string {
+	if gen := s.id_gen {
+		return gen()
+	}
+	return s.id_session.next()
 }
 
 // open prepares a trash directory with default options.
@@ -76,10 +87,9 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 		}
 	}
 	mut s := Store{
-		root:   resolved
-		sync:   opts.sync
-		id_gen: rand.uuid_v7
-		clock:  time.now
+		root:  resolved
+		sync:  opts.sync
+		clock: time.now
 	}
 	if gen := opts.id_gen {
 		s.id_gen = gen
@@ -491,7 +501,7 @@ fn (s Store) recover_purge(id string) ! {
 	if os.is_link(item) || !os.is_dir(item) {
 		return
 	}
-	dest := os.join_path(s.gc_dir(), '${id}-recovered-${s.id_gen()}')
+	dest := os.join_path(s.gc_dir(), '${id}-recovered-${s.next_id()}')
 	fsx.rename_noreplace(item, dest)!
 	s.sync_dir(s.items_dir())!
 	s.sync_dir(s.gc_dir())!
@@ -647,7 +657,7 @@ pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
 			}
 		}
 		if opts.purge && is_safe_id(broken.id) {
-			dest := os.join_path(s.gc_dir(), 'doctor-${broken.id}-${s.id_gen()}')
+			dest := os.join_path(s.gc_dir(), 'doctor-${broken.id}-${s.next_id()}')
 			fsx.rename_noreplace(s.item_dir(broken.id), dest) or {
 				action = 'purge failed'
 			}
