@@ -1,4 +1,4 @@
-.TH TRASH 1 "November 22, 2026" "trash 0.1.0" "User Commands"
+.TH TRASH 1 "November 23, 2026" "trash 0.1.0" "User Commands"
 .SH NAME
 trash \- safe rm replacement with recovery
 .SH SYNOPSIS
@@ -10,8 +10,13 @@ trash \- safe rm replacement with recovery
 .SH DESCRIPTION
 .B trash
 moves files and directories into a private trash store and can restore or
-permanently purge them later. It never overwrites an existing file on restore;
+permanently delete them later. It never overwrites an existing file on restore;
 conflicts receive a \fB~N\fR suffix.
+.PP
+\fBlist\fR, \fBrestore\fR, and \fBempty\fR share one selection model: the
+current directory by default, its subtree with \fB-r\fR, or the whole trash
+with \fB--all\fR. Targets, filters, sorting, limits, and interactive selection
+apply to all three commands in the same way.
 .SH COMMANDS
 .TP
 .B put
@@ -23,14 +28,13 @@ List items trashed from the current directory. Use \fB-r\fR for the subtree and
 \fB--all\fR for the whole trash.
 .TP
 .B restore
-Restore the newest item, a path, an id, or a unique id prefix.
-\fB--from-cwd\fR restores exactly what \fBtrash list\fR shows.
-.TP
-.B purge
-Permanently delete matching items. This cannot be undone.
+Restore the selected items. With no arguments, restore everything trashed from
+the current directory. Paths match every version of that path.
 .TP
 .B empty
-Permanently delete everything in the trash.
+Permanently delete the selected items. With no arguments, delete items trashed
+from the current directory. Use \fB--all\fR for the whole trash. This cannot be
+undone.
 .TP
 .B where
 Show the trash location and item count.
@@ -47,27 +51,33 @@ Show help for a command.
 Show the program version.
 .SH OPTIONS
 .TP
-.B \-\-graveyard \fIPATH\fR
-Use \fIPATH\fR as the trash store. Defaults to \fB$GRAVEYARD\fR,
+.B \-\-store \fIPATH\fR
+Use \fIPATH\fR as the trash store. Defaults to \fB$TRASH_STORE\fR,
 \fB$XDG_DATA_HOME/trash\fR, or \fB~/.local/share/trash\fR.
 .TP
 .B \-r, \-\-recursive
-Required to trash a directory. With \fBlist\fR, include the current directory
-subtree. With \fBrestore --from-cwd\fR, restore the same subtree.
+Required to trash a directory. With \fBlist\fR, \fBrestore\fR, or
+\fBempty\fR, include the current directory subtree, or the subtree of a
+directory target.
 .TP
-.B \-i, \-\-inspect
-Show a preview and ask for confirmation before trashing.
+.B \-\-preview
+With \fBput\fR, show a preview and ask for confirmation before trashing.
+.TP
+.B \-i, \-\-interactive
+With \fBput\fR, confirm each file before trashing. With \fBrestore\fR or
+\fBempty\fR, choose items interactively with multi-select syntax such as
+\fB1,3-5\fR, \fBa\fR for all, or \fBq\fR to quit.
 .TP
 .B \-\-dry\-run
 Show what would happen without changing anything.
 .TP
 .B \-y, \-\-yes
-Do not ask for confirmation. Required for non-interactive \fBempty\fR and
-multi-item \fBpurge\fR.
+Do not ask for confirmation. Required for non-interactive multi-item
+\fBrestore\fR and \fBempty\fR.
 .TP
 .B \-\-all
-With \fBlist\fR, show the whole trash. With \fBrestore\fR or \fBpurge\fR,
-operate on every match for each path.
+Use the whole trash instead of the current directory. Cannot be combined with
+targets or \fB-r\fR.
 .TP
 .B \-\-json
 Print machine-readable JSON where supported.
@@ -76,10 +86,11 @@ Print machine-readable JSON where supported.
 Show full ids, kinds, and full timestamps in \fBlist\fR.
 .TP
 .B \-\-limit \fIN\fR
-Limit \fBlist\fR output to \fIN\fR items.
+Use at most \fIN\fR items after sorting.
 .TP
 .B \-\-sort \fIMODE\fR
-Sort \fBlist\fR by \fBdate\fR, \fBsize\fR, \fBpath\fR, or \fBkind\fR.
+Sort by \fBdate\fR (newest first, the default), \fBsize\fR, \fBpath\fR, or
+\fBkind\fR.
 .TP
 .B \-\-kind \fIKIND\fR
 Filter by \fBfile\fR, \fBdir\fR, \fBsymlink\fR, or \fBother\fR.
@@ -88,23 +99,18 @@ Filter by \fBfile\fR, \fBdir\fR, \fBsymlink\fR, or \fBother\fR.
 Filter by a substring of the original path.
 .TP
 .B \-\-older\-than \fIAGE\fR
-Filter or purge items older than an age such as \fB30d\fR, \fB12h\fR,
-\fB5m\fR, or \fB10s\fR.
+Filter items older than an age such as \fB30d\fR, \fB12h\fR, \fB5m\fR, or
+\fB10s\fR.
 .TP
 .B \-\-keep \fIN\fR
-With \fBempty\fR, keep the newest \fIN\fR items.
-.TP
-.B \-\-select
-With \fBrestore\fR, interactively choose one item.
+With \fBempty\fR, never delete the \fIN\fR newest items of the selection,
+even when filters match them.
 .TP
 .B \-\-repair
 With \fBdoctor\fR, repair metadata where possible.
 .TP
 .B \-\-doctor\-purge
 With \fBdoctor\fR, permanently remove broken items.
-.TP
-.B \-\-from\-cwd
-Restore the items shown by \fBtrash list\fR.
 .TP
 .B \-\-wait
 With \fBempty\fR, wait for permanent deletion instead of deferring GC.
@@ -123,7 +129,7 @@ Disable fsync durability. This is unsafe: data may be lost after a crash.
 Use only for disposable stores or filesystems that cannot fsync directories.
 .SH ENVIRONMENT
 .TP
-.B GRAVEYARD
+.B TRASH_STORE
 Default trash store.
 .TP
 .B XDG_DATA_HOME
@@ -140,15 +146,17 @@ trash -r build/
 .PP
 trash list -r
 .PP
-trash restore --from-cwd
+trash restore -i
 .PP
-trash purge --all ./report.txt
+trash restore
 .PP
-trash empty --yes
+trash restore --all --limit 1
 .PP
-trash empty --older-than 30d --yes
+trash empty --all --yes
 .PP
-trash purge --older-than 7d --dry-run
+trash empty --older-than 30d --keep 5 --yes
+.PP
+trash empty --all --dry-run
 .PP
 trash doctor --repair
 .SH SEE ALSO

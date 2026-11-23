@@ -6,8 +6,7 @@ _trash() {
         'put:Move files to the trash'
         'list:List trashed items'
         'restore:Restore trashed items'
-        'purge:Permanently delete items'
-        'empty:Permanently empty the trash'
+        'empty:Permanently delete trashed items'
         'where:Show trash location'
         'doctor:Report or repair broken items'
         'help:Show help'
@@ -15,7 +14,7 @@ _trash() {
     )
 
     _arguments -C \
-        '--graveyard[use PATH as the trash]:path:_files -/' \
+        '--store[use PATH as the trash store]:path:_files -/' \
         '--verbose[explain what is happening]' \
         '--quiet[suppress non-error output]' \
         '--no-color[disable colours]' '--no-sync[disable fsync durability]' \
@@ -39,15 +38,23 @@ _trash() {
                         '--grep[filter path]:pattern:' '--older-than[minimum age]:age:'
                     ;;
                 restore)
-                    _arguments '--from-cwd[restore what list shows]' '--all[restore all matches]' '--select[interactively choose]' \
-                        '--dry-run[show plan]' '--json[JSON output]' '-y[assume yes]' '--yes[assume yes]'
-                    ;;
-                purge)
-                    _arguments '--all[purge all matches]' '--older-than[minimum age]:age:' '--grep[filter path]:pattern:' '--kind[filter kind]:kind:(file dir symlink other)' '--dry-run[show plan]' '--json[JSON output]' \
-                        '-y[assume yes]' '--yes[assume yes]'
+                    _arguments '(-r --recursive)'{-r,--recursive}'[include subtree]' \
+                        '--all[use whole trash]' '--limit[restore at most N]:number:' \
+                        '--sort[sort mode]:mode:(date size path kind)' \
+                        '--kind[filter kind]:kind:(file dir symlink other)' \
+                        '--grep[filter path]:pattern:' '--older-than[minimum age]:age:' \
+                        '(-i --interactive)'{-i,--interactive}'[choose items]' \
+                        '--dry-run[show plan]' '--json[JSON output]' '-y[skip confirmation]' '--yes[skip confirmation]'
                     ;;
                 empty)
-                    _arguments '--dry-run[show plan]' '--json[JSON output]' '-y[assume yes]' '--yes[assume yes]' '--wait[wait for GC]' '--keep[keep newest N]:number:' '--older-than[minimum age]:age:' '--grep[filter path]:pattern:' '--kind[filter kind]:kind:(file dir symlink other)'
+                    _arguments '(-r --recursive)'{-r,--recursive}'[include subtree]' \
+                        '--all[use whole trash]' '--keep[keep newest N]:number:' '--limit[delete at most N]:number:' \
+                        '--sort[sort mode]:mode:(date size path kind)' \
+                        '--kind[filter kind]:kind:(file dir symlink other)' \
+                        '--grep[filter path]:pattern:' '--older-than[minimum age]:age:' \
+                        '(-i --interactive)'{-i,--interactive}'[choose items]' \
+                        '--dry-run[show plan]' '--json[JSON output]' '-y[skip confirmation]' '--yes[skip confirmation]' \
+                        '--wait[wait for GC]'
                     ;;
                 where)
                     _arguments '--json[JSON output]'
@@ -57,7 +64,8 @@ _trash() {
                     ;;
                 put|*)
                     _arguments '(-r --recursive)'{-r,--recursive}'[allow directories]' \
-                        '(-i --inspect)'{-i,--inspect}'[preview and confirm]' \
+                        '--preview[preview and confirm]' \
+                        '(-i --interactive)'{-i,--interactive}'[confirm each file]' \
                         '--dry-run[show plan]' '-y[assume yes]' '--yes[assume yes]' '*:file:_files'
                     ;;
             esac

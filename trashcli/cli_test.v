@@ -2,6 +2,9 @@ module trashcli
 
 import os
 
+fn C.dup(fd int) int
+fn C.dup2(oldfd int, newfd int) int
+
 fn cli_dir(name string) string {
 	dir := canonical_path(os.join_path(os.temp_dir(), 'v_trash_cli_${os.getpid()}_${name}'))
 	os.rmdir_all(dir) or {}
@@ -16,6 +19,28 @@ fn cli_cleanup(dir string) {
 fn cli_write(path string, content string) {
 	os.mkdir_all(os.dir(path)) or { panic(err) }
 	os.write_file(path, content) or { panic(err) }
+}
+
+fn stdin_to_devnull() int {
+	$if !windows {
+		old := C.dup(0)
+		fd := C.open(&char(c'/dev/null'), C.O_RDONLY)
+		if fd >= 0 {
+			C.dup2(fd, 0)
+			C.close(fd)
+		}
+		return old
+	}
+	return -1
+}
+
+fn stdin_restore(old int) {
+	$if !windows {
+		if old >= 0 {
+			C.dup2(old, 0)
+			C.close(old)
+		}
+	}
 }
 
 fn cli_parse(args []string) Cli {
@@ -55,34 +80,34 @@ fn test_resolve_name_conflict_free_and_taken() {
 	assert resolve_name_conflict(base) == '${base}~2'
 }
 
-fn test_resolve_graveyard_prefers_cli_path() {
+fn test_resolve_store_prefers_cli_path() {
 	path := os.join_path(os.temp_dir(), 'trash-cli-grave')
-	assert (resolve_graveyard(path) or { panic(err) }) == canonical_path(path)
+	assert (resolve_store(path) or { panic(err) }) == canonical_path(path)
 }
 
-fn test_resolve_graveyard_uses_environment() {
-	old := os.getenv('GRAVEYARD')
+fn test_resolve_store_uses_environment() {
+	old := os.getenv('TRASH_STORE')
 	path := os.join_path(os.temp_dir(), 'trash-env-grave')
-	os.setenv('GRAVEYARD', path, true)
+	os.setenv('TRASH_STORE', path, true)
 	defer {
 		if old == '' {
-			os.unsetenv('GRAVEYARD')
+			os.unsetenv('TRASH_STORE')
 		} else {
-			os.setenv('GRAVEYARD', old, true)
+			os.setenv('TRASH_STORE', old, true)
 		}
 	}
-	assert (resolve_graveyard('') or { panic(err) }) == canonical_path(path)
+	assert (resolve_store('') or { panic(err) }) == canonical_path(path)
 }
 
-fn test_resolve_graveyard_uses_xdg_data_home() {
-	old_grave := os.getenv('GRAVEYARD')
+fn test_resolve_store_uses_xdg_data_home() {
+	old_grave := os.getenv('TRASH_STORE')
 	old_xdg := os.getenv('XDG_DATA_HOME')
-	os.unsetenv('GRAVEYARD')
+	os.unsetenv('TRASH_STORE')
 	xdg := os.join_path(os.temp_dir(), 'trash-xdg')
 	os.setenv('XDG_DATA_HOME', xdg, true)
 	defer {
 		if old_grave != '' {
-			os.setenv('GRAVEYARD', old_grave, true)
+			os.setenv('TRASH_STORE', old_grave, true)
 		}
 		if old_xdg == '' {
 			os.unsetenv('XDG_DATA_HOME')
@@ -90,13 +115,13 @@ fn test_resolve_graveyard_uses_xdg_data_home() {
 			os.setenv('XDG_DATA_HOME', old_xdg, true)
 		}
 	}
-	assert (resolve_graveyard('') or { panic(err) }) == canonical_path(os.join_path(xdg, 'trash'))
+	assert (resolve_store('') or { panic(err) }) == canonical_path(os.join_path(xdg, 'trash'))
 }
 
 fn test_parse_finds_command_after_global_flags() {
-	cli := cli_parse(['trash', '--graveyard', '/tmp/g', 'list', '-r', '--json'])
+	cli := cli_parse(['trash', '--store', '/tmp/g', 'list', '-r', '--json'])
 	assert cli.command == .list
-	assert cli.graveyard == '/tmp/g'
+	assert cli.store == '/tmp/g'
 	assert cli.recursive
 	assert cli.json
 }
@@ -108,16 +133,16 @@ fn test_parse_no_sync() {
 }
 
 fn test_parse_default_command_is_put() {
-	cli := cli_parse(['trash', '--graveyard', '/tmp/g', '-r', 'a', 'b'])
+	cli := cli_parse(['trash', '--store', '/tmp/g', '-r', 'a', 'b'])
 	assert cli.command == .put
 	assert cli.recursive
 	assert cli.targets == ['a', 'b']
 }
 
 fn test_parse_stops_at_double_dash() {
-	cli := cli_parse(['trash', '--', '-weird', '--graveyard'])
+	cli := cli_parse(['trash', '--', '-weird', '--store'])
 	assert cli.command == .put
-	assert cli.targets == ['-weird', '--graveyard']
+	assert cli.targets == ['-weird', '--store']
 }
 
 fn test_parse_rejects_unknown_flag() {
@@ -138,16 +163,20 @@ fn test_parse_rejects_invalid_combinations() {
 	assert failed
 
 	failed = false
-	Cli.parse(['trash', 'empty', '--all']) or { failed = true }
+	Cli.parse(['trash', 'empty', '--all', 'x']) or { failed = true }
 	assert failed
 
 	failed = false
-	Cli.parse(['trash', 'restore', '--recursive']) or { failed = true }
+	Cli.parse(['trash', 'restore', '--all', '--recursive']) or { failed = true }
 	assert failed
 
 	failed = false
-	Cli.parse(['trash', 'restore', '--from-cwd', 'x']) or { failed = true }
+	Cli.parse(['trash', 'restore', '-i', '--json']) or { failed = true }
 	assert failed
+
+	put_purge := cli_parse(['trash', 'purge', 'x'])
+	assert put_purge.command == .put
+	assert put_purge.targets == ['purge', 'x']
 }
 
 fn test_run_returns_error_for_missing_target() {
@@ -156,28 +185,28 @@ fn test_run_returns_error_for_missing_target() {
 		cli_cleanup(root)
 	}
 	mut failed := false
-	cli_run(['trash', '--graveyard', os.join_path(root, 'trash'), os.join_path(root, 'missing')]) or {
+	cli_run(['trash', '--store', os.join_path(root, 'trash'), os.join_path(root, 'missing')]) or {
 		failed = true
 	}
 	assert failed
 }
 
-fn test_run_put_and_restore_last() {
+fn test_run_put_and_restore() {
 	root := cli_dir('run_put')
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
+	store_path := os.join_path(root, 'trash')
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'hello')
 
-	cli_run(['trash', '--graveyard', graveyard, file]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 	assert !os.exists(file)
 
-	store := open(graveyard) or { panic(err) }
+	store := open(store_path) or { panic(err) }
 	assert store.list(ListFilter{}).len == 1
 
-	cli_run(['trash', '--graveyard', graveyard, 'restore']) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'restore', '--all']) or { panic(err) }
 	assert (os.read_file(file) or { '' }) == 'hello'
 }
 
@@ -186,62 +215,66 @@ fn test_run_directory_requires_recursive() {
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
+	store_path := os.join_path(root, 'trash')
 	dir := os.join_path(root, 'dir')
 	os.mkdir(dir) or { panic(err) }
 
 	mut failed := false
-	cli_run(['trash', '--graveyard', graveyard, dir]) or { failed = true }
+	cli_run(['trash', '--store', store_path, dir]) or { failed = true }
 	assert failed
 	assert os.is_dir(dir)
 
-	cli_run(['trash', '--graveyard', graveyard, '-r', dir]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, '-r', dir]) or { panic(err) }
 	assert !os.exists(dir)
 }
 
-fn test_run_purge() {
-	root := cli_dir('run_purge')
+fn test_run_empty_target() {
+	root := cli_dir('run_empty_target')
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
+	store_path := os.join_path(root, 'trash')
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
-	cli_run(['trash', '--graveyard', graveyard, file]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 
-	store := open(graveyard) or { panic(err) }
+	store := open(store_path) or { panic(err) }
 	entry := store.list(ListFilter{})[0]
-	cli_run(['trash', '--graveyard', graveyard, 'purge', entry.id]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'empty', '--yes', entry.id]) or { panic(err) }
 	assert store.list(ListFilter{}).len == 0
 }
 
 fn test_run_empty_requires_yes_when_not_interactive() {
+	old_stdin := stdin_to_devnull()
+	defer {
+		stdin_restore(old_stdin)
+	}
 	root := cli_dir('run_empty')
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
+	store_path := os.join_path(root, 'trash')
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
-	cli_run(['trash', '--graveyard', graveyard, file]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 
 	mut failed := false
-	cli_run(['trash', '--graveyard', graveyard, 'empty']) or { failed = true }
+	cli_run(['trash', '--store', store_path, 'empty', '--all']) or { failed = true }
 	assert failed
 
-	store := open(graveyard) or { panic(err) }
+	store := open(store_path) or { panic(err) }
 	assert store.list(ListFilter{}).len == 1
 
-	cli_run(['trash', '--graveyard', graveyard, 'empty', '--yes']) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'empty', '--all', '--yes']) or { panic(err) }
 	assert store.list(ListFilter{}).len == 0
 }
 
-fn test_run_restore_from_cwd() {
-	root := cli_dir('run_from_cwd')
+fn test_run_restore_default_scope() {
+	root := cli_dir('run_default_scope')
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
+	store_path := os.join_path(root, 'trash')
 	work := os.join_path(root, 'work')
 	os.mkdir(work) or { panic(err) }
 	file := os.join_path(work, 'a.txt')
@@ -253,10 +286,10 @@ fn test_run_restore_from_cwd() {
 		os.chdir(old_cwd) or {}
 	}
 
-	cli_run(['trash', '--graveyard', graveyard, file]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 	assert !os.exists(file)
 
-	cli_run(['trash', '--graveyard', graveyard, 'restore', '--from-cwd']) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'restore']) or { panic(err) }
 	assert os.exists(file)
 }
 
@@ -265,13 +298,13 @@ fn test_run_restore_by_prefix() {
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
+	store_path := os.join_path(root, 'trash')
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
-	cli_run(['trash', '--graveyard', graveyard, file]) or { panic(err) }
-	store := open(graveyard) or { panic(err) }
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	store := open(store_path) or { panic(err) }
 	id := store.list(ListFilter{})[0].id
-	cli_run(['trash', '--graveyard', graveyard, 'restore', id[..8]]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'restore', id[..8]]) or { panic(err) }
 	assert os.exists(file)
 }
 
@@ -280,12 +313,12 @@ fn test_run_dry_run_does_not_move() {
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
+	store_path := os.join_path(root, 'trash')
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
-	cli_run(['trash', '--graveyard', graveyard, '--dry-run', file]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, '--dry-run', file]) or { panic(err) }
 	assert os.exists(file)
-	store := open(graveyard) or { panic(err) }
+	store := open(store_path) or { panic(err) }
 	assert store.list(ListFilter{}).len == 0
 }
 
@@ -294,8 +327,8 @@ fn test_run_where() {
 	defer {
 		cli_cleanup(root)
 	}
-	graveyard := os.join_path(root, 'trash')
-	cli_run(['trash', '--graveyard', graveyard, 'where', '--json']) or { panic(err) }
+	store_path := os.join_path(root, 'trash')
+	cli_run(['trash', '--store', store_path, 'where', '--json']) or { panic(err) }
 }
 
 fn test_parse_filters_after_global_flags() {
@@ -312,9 +345,9 @@ fn test_parse_rejects_invalid_duration() {
 	assert failed
 }
 
-fn test_parse_rejects_select_outside_restore() {
+fn test_parse_rejects_interactive_outside_selection() {
 	mut failed := false
-	Cli.parse(['trash', 'list', '--select']) or { failed = true }
+	Cli.parse(['trash', 'list', '--interactive']) or { failed = true }
 	assert failed
 }
 
@@ -332,7 +365,7 @@ fn test_doctor_repairs_id_mismatch() {
 	meta.id = '00000000-0000-7000-8000-000000000099'
 	store.write_meta(entry.id, meta) or { panic(err) }
 	assert store.scan().broken.len == 1
-	cli_run(['trash', '--graveyard', store_path, 'doctor', '--repair'])!
+	cli_run(['trash', '--store', store_path, 'doctor', '--repair'])!
 	assert store.scan().broken.len == 0
 }
 
@@ -348,7 +381,108 @@ fn test_doctor_purge_removes_broken_item() {
 	entry := store.put(file, PutOptions{}) or { panic(err) }
 	os.write_file(store.meta_path(entry.id), 'not json') or { panic(err) }
 	assert store.scan().broken.len == 1
-	cli_run(['trash', '--graveyard', store_path, 'doctor', '--doctor-purge'])!
+	cli_run(['trash', '--store', store_path, 'doctor', '--doctor-purge'])!
 	assert store.scan().broken.len == 0
 	assert !os.is_dir(store.item_dir(entry.id))
+}
+
+fn test_parse_selection_input() {
+	assert (parse_selection_input('', 5) or { panic(err) }) == []int{}
+	assert (parse_selection_input('q', 5) or { panic(err) }) == []int{}
+	assert (parse_selection_input('a', 3) or { panic(err) }) == [0, 1, 2]
+	assert (parse_selection_input('1,3-4', 5) or { panic(err) }) == [0, 2, 3]
+	assert (parse_selection_input('3,3,1', 5) or { panic(err) }) == [2, 0]
+
+	mut failed := false
+	parse_selection_input('0', 5) or { failed = true }
+	assert failed
+
+	failed = false
+	parse_selection_input('6', 5) or { failed = true }
+	assert failed
+
+	failed = false
+	parse_selection_input('4-2', 5) or { failed = true }
+	assert failed
+}
+
+fn test_resolve_selection_scope_parity() {
+	root := cli_dir('selection_scope')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	work := os.join_path(root, 'work')
+	other := os.join_path(root, 'other')
+	os.mkdir_all(work) or { panic(err) }
+	os.mkdir_all(other) or { panic(err) }
+	a := os.join_path(work, 'a.txt')
+	b := os.join_path(other, 'b.txt')
+	cli_write(a, 'a')
+	cli_write(b, 'b')
+	cli_run(['trash', '--store', store_path, a]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, b]) or { panic(err) }
+
+	store := open(store_path) or { panic(err) }
+	entries := store.scan().entries
+	from_work := resolve_selection(entries, SelectionOptions{ cwd: work })!
+	assert from_work.len == 1
+	assert from_work[0].original_path == canonical_target_path(a)
+	whole := resolve_selection(entries, SelectionOptions{ cwd: work, all: true })!
+	assert whole.len == 2
+}
+
+fn test_run_empty_keep() {
+	root := cli_dir('run_empty_keep')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	work := os.join_path(root, 'work')
+	os.mkdir(work) or { panic(err) }
+	old_cwd := os.getwd()
+	os.chdir(work) or { panic(err) }
+	defer {
+		os.chdir(old_cwd) or {}
+	}
+	for name in ['a.txt', 'b.txt', 'c.txt'] {
+		path := os.join_path(work, name)
+		cli_write(path, name)
+		cli_run(['trash', '--store', store_path, path]) or { panic(err) }
+	}
+	cli_run(['trash', '--store', store_path, 'empty', '--keep', '1', '--yes']) or { panic(err) }
+	store := open(store_path) or { panic(err) }
+	left := store.list(ListFilter{})
+	assert left.len == 1
+	assert left[0].original_path == canonical_target_path(os.join_path(work, 'c.txt'))
+}
+
+fn test_resolve_selection_recursive_target() {
+	root := cli_dir('selection_recursive_target')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	work := os.join_path(root, 'work')
+	sub := os.join_path(work, 'sub')
+	file := os.join_path(sub, 'c.txt')
+	cli_write(file, 'c')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+
+	store := open(store_path) or { panic(err) }
+	entries := store.scan().entries
+	mut failed := false
+	resolve_selection(entries, SelectionOptions{
+		targets: [sub]
+		cwd:     work
+	}) or { failed = true }
+	assert failed
+
+	selected := resolve_selection(entries, SelectionOptions{
+		targets:   [sub]
+		cwd:       work
+		recursive: true
+	})!
+	assert selected.len == 1
+	assert selected[0].original_path == canonical_target_path(file)
 }

@@ -10,7 +10,8 @@ non-interactive `Store` API for embedding the same semantics in other programs.
 
 - Atomic same-filesystem moves; a safe copy path across filesystems.
 - Metadata and payload live together in `items/<uuidv7>/`.
-- Restore by id, unique id prefix, original path, or "last deleted".
+- Restore by id, unique id prefix, original path, or the current directory
+  selection.
 - Directories require `-r`; symlinks to directories do not.
 - Guards against trashing `/`, `.`/`..`, the trash root, its ancestors, and the
   current directory or its ancestors. Refuses `/` and world-writable roots as
@@ -28,15 +29,18 @@ non-interactive `Store` API for embedding the same semantics in other programs.
 - Cross-device copy to a unique temporary name, fsync, no-replace rename, then
   source removal.
 - One store scan per CLI command; batch put/restore/purge without O(n²) rescans.
+- `list`, `restore`, and `empty` share one selection model: cwd by default,
+  `-r` for the subtree, `--all` for the whole trash, plus targets, filters,
+  sorting, and limits.
 - Batch operations report per-item failures and keep successful results.
 - `list` filters by kind/path/age, sorts by date/size/path/kind, and shows
   relative ages.
-- `restore --select` picks an item interactively.
-- Retention policies: `purge --older-than`, `empty --older-than`, `empty --keep`.
+- `restore -i` and `empty -i` pick items interactively with multi-select.
+- Retention policies: `empty --older-than`, `empty --keep`.
 - `doctor` reports broken items, repairs id mismatches, pending/restoring
   state, invalid timestamps/kinds, and corrupt metadata when the payload still
   exists. Recovered items without a usable original path are restored to
-  `$GRAVEYARD/recovered/<id>`. `--doctor-purge` removes broken items.
+  `<store>/recovered/<id>`. `--doctor-purge` removes broken items.
 - `empty` detaches items under the exclusive lock and defers `.gc` cleanup;
   use `empty --wait` to wait for permanent deletion.
 - `--dry-run`, `--json`, and non-interactive `--yes` for scripting.
@@ -85,64 +89,66 @@ trash list --all --long
 trash list --all --kind file --grep report --sort size
 trash list --all --older-than 30d
 
-# Interactively pick one item to restore
-trash restore --select
+# Interactively pick items to restore
+trash restore -i
 
 # JSON output
 trash list --json
 
-# Restore the newest item
+# Restore everything trashed from the current directory
 trash restore
+
+# Restore the newest item in the whole trash
+trash restore --all --limit 1
 
 # Restore a specific item (full id or unique prefix)
 trash restore 01a203aa
 
 # Restore every item deleted from this path
-trash restore --all ./report.txt
-
-# Restore exactly what `trash list` shows
-trash restore --from-cwd
+trash restore ./report.txt
 
 # Permanently delete one item
-trash purge 01a203aa
+trash empty --yes 01a203aa
 
-# Permanently empty the trash (asks on a TTY)
+# Permanently delete everything from the current directory (asks on a TTY)
 trash empty
 
-# Retention: purge old items, or keep the newest 10
-trash purge --older-than 30d --yes
-trash empty --keep 10 --yes
+# Permanently empty the whole trash
+trash empty --all
+
+# Retention: delete old items, or keep the newest 10
+trash empty --all --older-than 30d --yes
+trash empty --all --keep 10 --yes
 
 # Wait for permanent deletion instead of deferring GC
-trash empty --yes --wait
+trash empty --all --yes --wait
 
 # Report or repair broken items
 trash doctor
 trash doctor --repair
 
 # Scripted empty
-trash empty --yes
+trash empty --all --yes
 
 # Show the store location and item count
 trash where
 ```
 
 The default store is `$XDG_DATA_HOME/trash`, falling back to
-`~/.local/share/trash`. Override it with `--graveyard` or `$GRAVEYARD`.
-`--graveyard` may appear before or after the command.
+`~/.local/share/trash`. Override it with `--store` or `$TRASH_STORE`.
+`--store` may appear before or after the command.
 
 Run `trash help <command>` for command-specific flags and examples.
 
 ## JSON output
 
-`--json` is supported by `list`, `restore`, `purge`, `empty`, `where`, and
+`--json` is supported by `list`, `restore`, `empty`, `where`, and
 `doctor`.
 
 - `list` → array of `{ id, original_path, deleted_at, kind, size }`.
 - `restore` → array of `{ id, original_path, restored_to }`.
-- `purge` → `{ purged, failed }`; with `--dry-run`,
-  `{ would_purge, items }`.
-- `empty` → `{ emptied, dry_run }`.
+- `empty` → `{ emptied, dry_run }`; with `--dry-run`,
+  `{ emptied, dry_run, items }`.
 - `where` → `{ root, items, broken, size, oldest, newest }`.
 - `doctor` → `{ broken, repaired, purged, items }`, where each item has
   `{ id, reason, action }`.
@@ -233,7 +239,7 @@ v -prod test .
 v -prod -o /tmp/trash-prod ./cmd/trash
 ```
 
-`scripts/concurrency_test.sh` exercises parallel put/restore/purge/empty
+`scripts/concurrency_test.sh` exercises parallel put/restore/empty
 operations against one store. `scripts/cross_device_test.sh` uses `/dev/shm`
 or a macOS RAM disk to exercise cross-device put/restore and the crash journal. `v run bench/bench.v 1000` measures put, scan,
 full-id find, and batch restore. Tests include deterministic fuzz-style checks for percent encoding and metadata

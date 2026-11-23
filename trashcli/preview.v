@@ -2,7 +2,7 @@ module trashcli
 
 import os
 
-fn print_inspect_info(target string) {
+fn print_preview_info(target string) {
 	if os.is_link(target) {
 		link := os.readlink(target) or { '?' }
 		println('${target}: symlink -> ${link}')

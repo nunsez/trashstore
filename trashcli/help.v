@@ -8,15 +8,14 @@ fn general_help() string {
 		'Commands:\n' +
 		'  put       Move files to the trash (default when no command is given)\n' +
 		'  list      List trashed items (direct children of cwd by default)\n' +
-		'  restore   Restore the last item, a path, or an id/prefix\n' +
-		'  purge     Permanently delete matching items\n' +
-		'  empty     Permanently empty the whole trash\n' +
+		'  restore   Restore trashed items (direct children of cwd by default)\n' +
+		'  empty     Permanently delete trashed items (cwd by default)\n' +
 		'  where     Show the trash location and item count\n' +
 		'  doctor    Report or repair broken trash items\n' +
 		'  help      Show help for a command\n' +
 		'  version   Show program version\n\n' +
 		'Global options:\n' +
-		'  --graveyard PATH   Store files in PATH\n' +
+		'  --store PATH       Use PATH as the trash store\n' +
 		'  --verbose          Explain what is happening\n' +
 		'  --quiet            Suppress non-error output\n' +
 		'  --no-color         Disable colours\n' +
@@ -27,9 +26,9 @@ fn general_help() string {
 		'  trash report.txt\n' +
 		'  trash -r build/\n' +
 		'  trash list -r\n' +
-		'  trash restore --from-cwd\n' +
-		'  trash purge --all ./report.txt\n' +
-		'  trash empty --yes\n'
+		'  trash restore -i\n' +
+		'  trash restore --all --limit 1\n' +
+		'  trash empty --all --yes\n'
 }
 
 fn command_help(c Command) string {
@@ -39,18 +38,20 @@ fn command_help(c Command) string {
 				'Moves files and directories to the trash.\n\n' +
 				'Options:\n' +
 				'  -r, --recursive   Required to trash a directory\n' +
-				'  -i, --inspect     Show a preview and ask for confirmation\n' +
+				'  --preview         Show a preview and ask for confirmation\n' +
+				'  -i, --interactive Confirm each file before trashing\n' +
 				'  --dry-run         Show what would be trashed\n' +
-				'  -y, --yes         Assume yes for -i prompts\n' +
-				'  --graveyard PATH  Store files in PATH\n\n' +
+				'  -y, --yes         Assume yes for prompts\n' +
+				'  --store PATH      Use PATH as the trash store\n\n' +
 				'Examples:\n' +
 				'  trash report.txt\n' +
 				'  trash -r build/\n' +
+				'  trash --preview report.txt\n' +
 				'  trash --dry-run report.txt\n'
 		}
 		.list {
 			'Usage: trash list [OPTIONS]\n\n' +
-				'Lists items deleted from the current directory. Use -r for the\n' +
+				'Lists items trashed from the current directory. Use -r for the\n' +
 				'whole subtree and --all for the whole trash.\n\n' +
 				'Options:\n' +
 				'  -r, --recursive   Include the current directory subtree\n' +
@@ -62,7 +63,7 @@ fn command_help(c Command) string {
 				'  --kind KIND       file, dir, symlink or other\n' +
 				'  --grep PATTERN    Filter by original path substring\n' +
 				'  --older-than AGE  e.g. 30d, 12h, 5m\n' +
-				'  --graveyard PATH  Use PATH as the trash\n\n' +
+				'  --store PATH      Use PATH as the trash store\n\n' +
 				'Examples:\n' +
 				'  trash list\n' +
 				'  trash list -r\n' +
@@ -70,68 +71,70 @@ fn command_help(c Command) string {
 		}
 		.restore {
 			'Usage: trash restore [OPTIONS] [<id|prefix|path>...]\n\n' +
-				'Restores the newest item when no argument is given. Paths restore\n' +
-				'the newest matching item; --all restores every match.\n\n' +
+				'Restores the selected items. With no arguments, restores everything\n' +
+				'trashed from the current directory; use --all for the whole trash.\n\n' +
 				'Options:\n' +
-				'  --from-cwd        Restore exactly what `trash list` shows\n' +
-				'  --all             Restore every match for each path\n' +
-				'  --select          Interactively choose one item\n' +
+				'  -r, --recursive   Include the current directory subtree\n' +
+				'  --all             Use the whole trash\n' +
+				'  --limit N         Restore at most N items\n' +
+				'  --sort MODE       date, size, path or kind\n' +
+				'  --kind KIND       file, dir, symlink or other\n' +
+				'  --grep PATTERN    Filter by original path substring\n' +
+				'  --older-than AGE  e.g. 30d, 12h, 5m\n' +
+				'  -i, --interactive Interactively choose items\n' +
 				'  --dry-run         Show what would be restored\n' +
 				'  --json            Print machine-readable JSON\n' +
-				'  -y, --yes         Assume yes for prompts\n' +
-				'  --graveyard PATH  Use PATH as the trash\n\n' +
+				'  -y, --yes         Skip the confirmation prompt\n' +
+				'  --store PATH      Use PATH as the trash store\n\n' +
 				'Examples:\n' +
 				'  trash restore\n' +
 				'  trash restore 01a203aa\n' +
-				'  trash restore --from-cwd\n' +
-				'  trash restore --all ./report.txt\n'
-		}
-		.purge {
-			'Usage: trash purge [OPTIONS] [<id|prefix|path>...]\n\n' +
-				'Permanently deletes matching items. This cannot be undone.\n\n' +
-				'Options:\n' +
-				'  --all             Purge every match for each path\n' +
-				'  --older-than AGE  Purge items older than e.g. 30d\n' +
-				'  --grep PATTERN    Purge items whose path matches\n' +
-				'  --kind KIND       Purge only file/dir/symlink/other\n' +
-				'  --dry-run         Show what would be purged\n' +
-				'  --json            Print machine-readable JSON\n' +
-				'  -y, --yes         Do not ask before a multi-item purge\n' +
-				'  --graveyard PATH  Use PATH as the trash\n\n' +
-				'Examples:\n' +
-				'  trash purge 01a203aa\n' +
-				'  trash purge --all ./report.txt\n'
+				'  trash restore --all --limit 1\n' +
+				'  trash restore -i\n' +
+				'  trash restore ./report.txt\n'
 		}
 		.empty {
-			'Usage: trash empty [OPTIONS]\n\n' +
-				'Permanently deletes everything in the trash, or only items selected by\nretention filters.\n\n' +
+			'Usage: trash empty [OPTIONS] [<id|prefix|path>...]\n\n' +
+				'Permanently deletes the selected items. With no arguments, deletes\n' +
+				'items trashed from the current directory; use --all for the whole\n' +
+				'trash. This cannot be undone.\n\n' +
 				'Options:\n' +
-				'  --dry-run         Show how many items would be deleted\n' +
+				'  -r, --recursive   Include the current directory subtree\n' +
+				'  --all             Use the whole trash\n' +
+				'  --keep N          Never delete the N newest items\n' +
+				'  --limit N         Delete at most N items\n' +
+				'  --sort MODE       date, size, path or kind\n' +
+				'  --kind KIND       file, dir, symlink or other\n' +
+				'  --grep PATTERN    Filter by original path substring\n' +
+				'  --older-than AGE  e.g. 30d, 12h, 5m\n' +
+				'  -i, --interactive Interactively choose items\n' +
+				'  --dry-run         Show what would be deleted\n' +
 				'  --json            Print machine-readable JSON\n' +
-				'  -y, --yes         Do not ask for confirmation\n' +
+				'  -y, --yes         Skip the confirmation prompt\n' +
 				'  --wait            Wait for permanent deletion instead of deferring GC\n' +
-				'  --older-than AGE  Purge items older than e.g. 30d\n' +
-				'  --keep N          Keep the newest N items\n' +
-				'  --grep PATTERN    Purge items whose path matches\n' +
-				'  --kind KIND       Purge only file/dir/symlink/other\n' +
-				'  --graveyard PATH  Use PATH as the trash\n'
+				'  --store PATH      Use PATH as the trash store\n\n' +
+				'Examples:\n' +
+				'  trash empty\n' +
+				'  trash empty --all --yes\n' +
+				'  trash empty --older-than 30d --keep 5\n' +
+				'  trash empty 01a203aa\n'
 		}
 		.where {
 			'Usage: trash where [OPTIONS]\n\n' +
 				'Shows the trash location and item count.\n\n' +
 				'Options:\n' +
 				'  --json            Print machine-readable JSON\n' +
-				'  --graveyard PATH  Use PATH as the trash\n'
+				'  --store PATH      Use PATH as the trash store\n'
 		}
 		.doctor {
 			'Usage: trash doctor [OPTIONS]\n\n' +
 				'Reports broken trash items. With --repair it fixes id mismatches;\n' +
-				'with --doctor-purge (or --purge) it removes broken items.\n\n' +
+				'with --doctor-purge it removes broken items.\n\n' +
 				'Options:\n' +
 				'  --repair          Repair metadata where possible\n' +
 				'  --doctor-purge    Permanently remove broken items\n' +
 				'  --json            Print machine-readable JSON\n' +
-				'  --graveyard PATH  Use PATH as the trash\n'
+				'  --store PATH      Use PATH as the trash store\n'
 		}
 		.help {
 			'Usage: trash help [command]\n'

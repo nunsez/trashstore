@@ -54,12 +54,12 @@ STORE="$WORK/store"
 SRC="$CROSS_ROOT/file.txt"
 
 printf 'cross-device payload\n' >"$SRC"
-"$BIN" --graveyard "$STORE" "$SRC"
+"$BIN" --store "$STORE" "$SRC"
 if [[ -e "$SRC" ]]; then
     echo "cross-device put left the source in place" >&2
     exit 1
 fi
-"$BIN" --graveyard "$STORE" restore --all "$SRC"
+"$BIN" --store "$STORE" restore "$SRC"
 if [[ "$(cat "$SRC")" != "cross-device payload" ]]; then
     echo "cross-device restore did not preserve payload" >&2
     exit 1
@@ -67,21 +67,21 @@ fi
 
 mkdir "$CROSS_ROOT/dir"
 printf 'directory payload\n' >"$CROSS_ROOT/dir/child.txt"
-"$BIN" --graveyard "$STORE" -r "$CROSS_ROOT/dir"
+"$BIN" --store "$STORE" -r "$CROSS_ROOT/dir"
 if [[ -e "$CROSS_ROOT/dir" ]]; then
     echo "cross-device directory put left the source in place" >&2
     exit 1
 fi
-"$BIN" --graveyard "$STORE" restore --all "$CROSS_ROOT/dir"
+"$BIN" --store "$STORE" restore "$CROSS_ROOT/dir"
 if [[ "$(cat "$CROSS_ROOT/dir/child.txt")" != "directory payload" ]]; then
     echo "cross-device directory restore did not preserve payload" >&2
     exit 1
 fi
 
 printf 'crash journal payload\n' >"$SRC"
-"$BIN" --graveyard "$STORE" "$SRC"
+"$BIN" --store "$STORE" "$SRC"
 if TRASH_TEST_FAILPOINTS=1 TRASH_FAILPOINT=restore:after-target-rename \
-    "$BIN" --graveyard "$STORE" restore --all "$SRC" >/dev/null 2>&1; then
+    "$BIN" --store "$STORE" restore "$SRC" >/dev/null 2>&1; then
     echo "restore failpoint did not fail" >&2
     exit 1
 fi
@@ -93,7 +93,7 @@ if [[ -e "$SRC~1" ]]; then
     echo "crash journal produced a duplicate target" >&2
     exit 1
 fi
-"$BIN" --graveyard "$STORE" list --all --json >"$WORK/list.json"
+"$BIN" --store "$STORE" list --all --json >"$WORK/list.json"
 if [[ "$(cat "$WORK/list.json")" != "[]" ]]; then
     echo "crash journal recovery left items behind" >&2
     cat "$WORK/list.json" >&2

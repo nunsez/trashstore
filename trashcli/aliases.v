@@ -61,3 +61,7 @@ fn canonical_target_path(path string) string {
 fn resolve_name_conflict(base string) string {
 	return pathx.resolve_name_conflict(base)
 }
+
+fn is_path_within(path string, base string) bool {
+	return pathx.is_path_within(path, base)
+}

@@ -7,7 +7,6 @@ pub enum Command {
 	put
 	list
 	restore
-	purge
 	empty
 	where
 	doctor
@@ -21,7 +20,6 @@ pub fn (c Command) label() string {
 		.put { 'put' }
 		.list { 'list' }
 		.restore { 'restore' }
-		.purge { 'purge' }
 		.empty { 'empty' }
 		.where { 'where' }
 		.doctor { 'doctor' }
@@ -35,7 +33,6 @@ fn command_from_name(name string) ?Command {
 		'put' { .put }
 		'list', 'ls' { .list }
 		'restore' { .restore }
-		'purge' { .purge }
 		'empty' { .empty }
 		'where' { .where }
 		'doctor' { .doctor }
@@ -49,7 +46,7 @@ pub struct Cli {
 pub mut:
 	command            Command = .put
 	help_command       ?Command
-	graveyard          string
+	store              string
 	verbose            bool
 	quiet              bool
 	no_color           bool
@@ -57,7 +54,8 @@ pub mut:
 	json               bool
 	all                bool
 	recursive          bool
-	inspect            bool
+	preview            bool
+	interactive        bool
 	dry_run            bool
 	yes                bool
 	long               bool
@@ -66,9 +64,7 @@ pub mut:
 	kind               string
 	grep               string
 	older_than_seconds i64
-	from_cwd           bool
 	wait               bool
-	select             bool
 	keep               int
 	doctor_purge       bool
 	doctor_repair      bool
@@ -88,11 +84,11 @@ fn find_command(args []string) ?CommandMatch {
 		if arg == '--' {
 			return none
 		}
-		if arg in ['--graveyard', '--limit', '--sort', '--kind', '--grep', '--older-than', '--keep'] {
+		if arg in ['--store', '--limit', '--sort', '--kind', '--grep', '--older-than', '--keep'] {
 			i += 2
 			continue
 		}
-		if arg.starts_with('--graveyard=') || arg.starts_with('--limit=')
+		if arg.starts_with('--store=') || arg.starts_with('--limit=')
 			|| arg.starts_with('--sort=') || arg.starts_with('--kind=')
 			|| arg.starts_with('--grep=') || arg.starts_with('--older-than=')
 			|| arg.starts_with('--keep=') {
@@ -170,20 +166,20 @@ pub fn Cli.parse(args []string) !Cli {
 			cli.command = .version
 			return cli
 		}
-		if arg == '--graveyard' {
+		if arg == '--store' {
 			if i + 1 >= parse_args.len {
-				return error('--graveyard requires a path')
+				return error('--store requires a path')
 			}
-			cli.graveyard = parse_args[i + 1]
+			cli.store = parse_args[i + 1]
 			i += 2
 			continue
 		}
-		if arg.starts_with('--graveyard=') {
-			value := arg['--graveyard='.len..]
+		if arg.starts_with('--store=') {
+			value := arg['--store='.len..]
 			if value == '' {
-				return error('--graveyard requires a path')
+				return error('--store requires a path')
 			}
-			cli.graveyard = value
+			cli.store = value
 			i++
 			continue
 		}
@@ -278,6 +274,9 @@ pub fn Cli.parse(args []string) !Cli {
 			cli.limit = strconv.atoi(arg['--limit='.len..]) or {
 				return error('--limit must be a number')
 			}
+			if cli.limit < 0 {
+				return error('--limit must not be negative')
+			}
 			i++
 			continue
 		}
@@ -289,15 +288,14 @@ pub fn Cli.parse(args []string) !Cli {
 			'--json' { cli.json = true }
 			'--all' { cli.all = true }
 			'-r', '--recursive' { cli.recursive = true }
-			'-i', '--inspect' { cli.inspect = true }
+			'-i', '--interactive' { cli.interactive = true }
+			'--preview' { cli.preview = true }
 			'--dry-run' { cli.dry_run = true }
 			'-y', '--yes' { cli.yes = true }
 			'--long', '--full-id' { cli.long = true }
-			'--from-cwd' { cli.from_cwd = true }
 			'--wait' { cli.wait = true }
-			'--select' { cli.select = true }
 			'--repair' { cli.doctor_repair = true }
-			'--doctor-purge', '--purge' { cli.doctor_purge = true }
+			'--doctor-purge' { cli.doctor_purge = true }
 			else {
 				if arg.starts_with('-') {
 					return error('unknown flag `${arg}`\nhint: run `trash help ${cli.command.label()}`')
@@ -315,36 +313,39 @@ fn (cli Cli) validate() ! {
 	if cli.verbose && cli.quiet {
 		return error('--verbose and --quiet cannot be combined')
 	}
-	if cli.json && !(cli.command in [.list, .restore, .purge, .empty, .where, .doctor]) {
+	if cli.json && !(cli.command in [.list, .restore, .empty, .where, .doctor]) {
 		return error('--json is not supported by `${cli.command.label()}`')
 	}
-	if cli.all && !(cli.command in [.list, .restore, .purge]) {
+	if cli.all && !(cli.command in [.list, .restore, .empty]) {
 		return error('--all is not supported by `${cli.command.label()}`')
 	}
-	if cli.recursive && !(cli.command in [.put, .list]) && !(cli.command == .restore && cli.from_cwd) {
+	if cli.recursive && !(cli.command in [.put, .list, .restore, .empty]) {
 		return error('--recursive is not supported by `${cli.command.label()}`')
 	}
-	if cli.inspect && cli.command != .put {
-		return error('--inspect is only supported by `put`')
+	if cli.preview && cli.command != .put {
+		return error('--preview is only supported by `put`')
 	}
-	if cli.dry_run && !(cli.command in [.put, .restore, .purge, .empty]) {
+	if cli.interactive && !(cli.command in [.put, .restore, .empty]) {
+		return error('--interactive is only supported by `put`, `restore` and `empty`')
+	}
+	if cli.dry_run && !(cli.command in [.put, .restore, .empty]) {
 		return error('--dry-run is not supported by `${cli.command.label()}`')
 	}
-	if cli.yes && !(cli.command in [.put, .restore, .purge, .empty]) {
+	if cli.yes && !(cli.command in [.put, .restore, .empty]) {
 		return error('--yes is not supported by `${cli.command.label()}`')
 	}
 	if cli.long && cli.command != .list {
 		return error('--long is only supported by `list`')
 	}
-	if cli.limit > 0 && cli.command != .list {
-		return error('--limit is only supported by `list`')
+	if cli.limit > 0 && !(cli.command in [.list, .restore, .empty]) {
+		return error('--limit is only supported by `list`, `restore` and `empty`')
 	}
-	if cli.sort != '' && cli.command != .list {
-		return error('--sort is only supported by `list`')
+	if cli.sort != '' && !(cli.command in [.list, .restore, .empty]) {
+		return error('--sort is only supported by `list`, `restore` and `empty`')
 	}
 	if (cli.kind != '' || cli.grep != '' || cli.older_than_seconds > 0)
-		&& !(cli.command in [.list, .purge, .empty]) {
-		return error('--kind, --grep and --older-than are only supported by `list`, `purge` and `empty`')
+		&& !(cli.command in [.list, .restore, .empty]) {
+		return error('--kind, --grep and --older-than are only supported by `list`, `restore` and `empty`')
 	}
 	if cli.sort != '' && cli.sort !in ['date', 'size', 'path', 'kind'] {
 		return error('--sort must be one of: date, size, path, kind')
@@ -352,14 +353,8 @@ fn (cli Cli) validate() ! {
 	if cli.kind != '' && cli.kind !in ['file', 'dir', 'symlink', 'other'] {
 		return error('--kind must be one of: file, dir, symlink, other')
 	}
-	if cli.from_cwd && cli.command != .restore {
-		return error('--from-cwd is only supported by `restore`')
-	}
 	if cli.wait && cli.command != .empty {
 		return error('--wait is only supported by `empty`')
-	}
-	if cli.select && cli.command != .restore {
-		return error('--select is only supported by `restore`')
 	}
 	if cli.keep > 0 && cli.command != .empty {
 		return error('--keep is only supported by `empty`')
@@ -367,28 +362,27 @@ fn (cli Cli) validate() ! {
 	if (cli.doctor_purge || cli.doctor_repair) && cli.command != .doctor {
 		return error('--repair and --doctor-purge are only supported by `doctor`')
 	}
+	if cli.interactive && cli.json {
+		return error('--interactive cannot be combined with --json')
+	}
+	if cli.all && cli.targets.len > 0 {
+		return error('--all cannot be combined with targets')
+	}
+	if cli.all && cli.recursive {
+		return error('--all and --recursive cannot be combined')
+	}
 	match cli.command {
 		.put {
 			if cli.targets.len == 0 {
 				return error('no files or directories specified\nhint: run `trash help put`')
 			}
 		}
-		.list, .empty, .where, .doctor {
+		.list, .where, .doctor {
 			if cli.targets.len > 0 {
 				return error('`${cli.command.label()}` does not accept targets')
 			}
 		}
-		.restore {
-			if cli.from_cwd && cli.targets.len > 0 {
-				return error('--from-cwd cannot be combined with targets')
-			}
-		}
-		.purge {
-			if cli.targets.len == 0 && cli.older_than_seconds == 0 && cli.grep == ''
-				&& cli.kind == '' {
-				return error('`purge` requires at least one target or a filter')
-			}
-		}
+		.restore, .empty {}
 		.help, .version {}
 	}
 }
@@ -398,14 +392,14 @@ pub fn (cli Cli) palette() Palette {
 	return new_palette(cli.no_color)
 }
 
-// resolve_graveyard resolves --graveyard / $GRAVEYARD / $XDG_DATA_HOME / ~/.local/share/trash.
-pub fn resolve_graveyard(cli_path string) !string {
+// resolve_store resolves --store / $TRASH_STORE / $XDG_DATA_HOME / ~/.local/share/trash.
+pub fn resolve_store(cli_path string) !string {
 	if cli_path != '' {
 		return canonical_path(cli_path)
 	}
-	env_grave := os.getenv('GRAVEYARD')
-	if env_grave != '' {
-		return canonical_path(env_grave)
+	env_store := os.getenv('TRASH_STORE')
+	if env_store != '' {
+		return canonical_path(env_store)
 	}
 	xdg_data := os.getenv('XDG_DATA_HOME')
 	if xdg_data != '' {
@@ -415,7 +409,7 @@ pub fn resolve_graveyard(cli_path string) !string {
 	if home != '' {
 		return canonical_path(os.join_path(home, '.local', 'share', 'trash'))
 	}
-	return error('cannot determine home directory; pass --graveyard')
+	return error('cannot determine home directory; pass --store')
 }
 
 fn parse_duration(value string) !i64 {

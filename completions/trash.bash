@@ -2,8 +2,8 @@ _trash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="put list restore purge empty where doctor help version"
-    local global_opts="--graveyard --verbose --quiet --no-color --no-sync -h --help -V --version"
+    local commands="put list restore empty where doctor help version"
+    local global_opts="--store --verbose --quiet --no-color --no-sync -h --help -V --version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$commands $global_opts" -- "$cur") )
@@ -15,13 +15,10 @@ _trash() {
             COMPREPLY=( $(compgen -W "--recursive --all --json --long --full-id --limit --sort --kind --grep --older-than $global_opts" -- "$cur") )
             ;;
         restore)
-            COMPREPLY=( $(compgen -W "--from-cwd --all --select --dry-run --json --yes --wait --keep --older-than --grep --kind $global_opts" -- "$cur") )
-            ;;
-        purge)
-            COMPREPLY=( $(compgen -W "--all --older-than --grep --kind --dry-run --json --yes --wait --keep --older-than --grep --kind $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --all --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes $global_opts" -- "$cur") )
             ;;
         empty)
-            COMPREPLY=( $(compgen -W "--dry-run --json --yes --wait --keep --older-than --grep --kind $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --all --keep --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes --wait $global_opts" -- "$cur") )
             ;;
         where)
             COMPREPLY=( $(compgen -W "--json $global_opts" -- "$cur") )
@@ -30,7 +27,7 @@ _trash() {
             COMPREPLY=( $(compgen -W "--repair --doctor-purge --json $global_opts" -- "$cur") )
             ;;
         put|*)
-            COMPREPLY=( $(compgen -W "--recursive --inspect --dry-run --yes $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --preview --interactive --dry-run --yes $global_opts" -- "$cur") )
             _filedir
             ;;
     esac

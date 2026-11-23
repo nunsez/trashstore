@@ -3,17 +3,17 @@ module trashcli
 import internal.format
 import json2
 import os
-import strconv
 import time
-
-struct PurgeReport {
-	purged int
-	failed int
-}
 
 struct EmptyReport {
 	emptied int
 	dry_run bool
+}
+
+struct EmptyPlan {
+	emptied int
+	dry_run bool
+	items   []JsonEntry
 }
 
 struct WhereReport {
@@ -31,11 +31,6 @@ struct RestorePlan {
 	restored_to   string
 }
 
-struct PurgePlan {
-	would_purge int
-	items       []JsonEntry
-}
-
 // run executes the parsed command.
 pub fn run(cli Cli) ! {
 	match cli.command {
@@ -50,7 +45,7 @@ pub fn run(cli Cli) ! {
 		else {}
 	}
 
-	store := open_with(resolve_graveyard(cli.graveyard)!, StoreOptions{
+	store := open_with(resolve_store(cli.store)!, StoreOptions{
 		sync: !cli.no_sync
 	})!
 	if cli.no_sync {
@@ -70,7 +65,6 @@ pub fn run(cli Cli) ! {
 		.put { run_put(store, cli)! }
 		.list { run_list(store, cli)! }
 		.restore { run_restore(store, cli)! }
-		.purge { run_purge(store, cli)! }
 		.empty { run_empty(store, cli)! }
 		.where { run_where(store, cli)! }
 		.doctor { run_doctor(store, cli)! }
@@ -89,7 +83,8 @@ fn warn_broken(broken []BrokenItem, cli Cli) {
 }
 
 fn run_put(store Store, cli Cli) ! {
-	if !cli.dry_run && !cli.inspect {
+	interactive := cli.preview || cli.interactive
+	if !cli.dry_run && !interactive {
 		batch := store.put_many(cli.targets, PutOptions{ recursive: cli.recursive })!
 		if cli.verbose && !cli.quiet {
 			for entry in batch.entries {
@@ -105,11 +100,17 @@ fn run_put(store Store, cli Cli) ! {
 		}
 		return
 	}
+	if interactive && !cli.yes && !cli.dry_run && os.is_atty(0) == 0 {
+		return error('-i/--interactive requires a terminal; use --yes to skip the prompt')
+	}
 	mut failures := []string{}
 	for target in cli.targets {
 		planned := store.plan_put(target, PutOptions{ recursive: cli.recursive }) or {
 			failures << 'Failed to trash ${target}: ${err.msg()}'
 			continue
+		}
+		if interactive {
+			print_preview_info(planned.original_path)
 		}
 		if cli.dry_run {
 			if !cli.quiet {
@@ -117,16 +118,10 @@ fn run_put(store Store, cli Cli) ! {
 			}
 			continue
 		}
-		if cli.inspect {
-			if !cli.yes && os.is_atty(0) == 0 {
-				return error('--inspect requires a terminal; use --yes to skip the prompt')
-			}
-			print_inspect_info(planned.original_path)
-			if !cli.yes {
-				ans := os.input('Send ${planned.original_path} to the trash? (y/n) ').trim_space().to_lower()
-				if ans != 'y' && ans != 'yes' {
-					continue
-				}
+		if interactive && !cli.yes {
+			ans := os.input('Send ${planned.original_path} to the trash? (y/n) ').trim_space().to_lower()
+			if ans != 'y' && ans != 'yes' {
+				continue
 			}
 		}
 		entry := store.put(target, PutOptions{ recursive: cli.recursive }) or {
@@ -146,16 +141,7 @@ fn run_list(store Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
 	cwd := canonical_path(os.getwd())
-	entries := filter_entries(scan.entries, ListFilter{
-		cwd:                if cli.all { '' } else { cwd }
-		recursive:          cli.recursive
-		all:                cli.all
-		limit:              cli.limit
-		sort:               cli.sort
-		kind:               cli.kind
-		grep:               cli.grep
-		older_than_seconds: cli.older_than_seconds
-	})
+	entries := resolve_selection(scan.entries, selection_options(cli, cwd))!
 	if cli.json {
 		println(json2.encode(json_entries(entries), escape_unicode: true))
 		return
@@ -173,46 +159,28 @@ fn run_list(store Store, cli Cli) ! {
 	print_table(entries, cwd, cli.long, cli.palette())
 }
 
-fn collect_matches(entries []Entry, targets []string, all bool) ![]Entry {
-	mut selected := []Entry{}
-	mut seen := map[string]bool{}
-	for target in targets {
-		matches := find_in(entries, target)!
-		chosen := if all { matches } else { [matches[0]] }
-		for entry in chosen {
-			if seen[entry.id] {
-				continue
-			}
-			seen[entry.id] = true
-			selected << entry
-		}
-	}
-	return selected
-}
-
 fn run_restore(store Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
-	mut selected := []Entry{}
-	if cli.from_cwd {
-		cwd := canonical_path(os.getwd())
-		selected = filter_entries(scan.entries, ListFilter{
-			cwd:       cwd
-			recursive: cli.recursive
-		})
-		if selected.len == 0 {
-			if !cli.quiet {
+	cwd := canonical_path(os.getwd())
+	mut selected := resolve_selection(scan.entries, selection_options(cli, cwd))!
+	if selected.len == 0 {
+		if cli.json {
+			println('[]')
+		} else if !cli.quiet {
+			if cli.all {
+				println('Trash is empty.')
+			} else {
 				println('No items trashed from ${cwd}.')
 			}
+		}
+		return
+	}
+	if cli.interactive {
+		selected = prompt_selection(selected)!
+		if selected.len == 0 {
 			return
 		}
-	} else if cli.targets.len == 0 {
-		selected = find_in(scan.entries, '')!
-	} else {
-		selected = collect_matches(scan.entries, cli.targets, cli.all)!
-	}
-	if cli.select {
-		selected = select_entries(selected, cli)!
 	}
 	if cli.dry_run {
 		mut plans := []RestorePlan{}
@@ -230,6 +198,10 @@ fn run_restore(store Store, cli Cli) ! {
 		if cli.json {
 			println(json2.encode(plans, escape_unicode: true))
 		}
+		return
+	}
+	if !confirm_action(selected.len, 'Restore', selection_scope(cli, cwd), cli, false)! {
+		println('Aborted.')
 		return
 	}
 	batch := store.restore_batch(selected)!
@@ -256,63 +228,69 @@ fn run_restore(store Store, cli Cli) ! {
 	}
 }
 
-fn run_purge(store Store, cli Cli) ! {
+fn run_empty(store Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
-	mut selected := if cli.targets.len == 0 {
-		filter_entries(scan.entries, ListFilter{
-			all:                true
-			older_than_seconds: cli.older_than_seconds
-			kind:               cli.kind
-			grep:               cli.grep
-		})
-	} else {
-		collect_matches(scan.entries, cli.targets, cli.all)!
+	cwd := canonical_path(os.getwd())
+	if empty_whole_trash(cli) && !cli.dry_run {
+		return run_empty_whole(store, cli, cwd)
 	}
-	if cli.targets.len > 0 {
-		if cli.older_than_seconds > 0 {
-			cutoff := time.now().unix() - cli.older_than_seconds
-			selected = selected.filter(it.trashed_at.unix() <= cutoff)
+	mut selected := resolve_selection(scan.entries, selection_options(cli, cwd))!
+	if selected.len == 0 {
+		if cli.json {
+			if cli.dry_run {
+				println(json2.encode(EmptyPlan{
+					emptied: 0
+					dry_run: true
+					items:   []JsonEntry{}
+				}, escape_unicode: true))
+			} else {
+				println(json2.encode(EmptyReport{ emptied: 0, dry_run: false },
+					escape_unicode: true
+				))
+			}
+		} else if !cli.quiet {
+			if cli.all {
+				println('Trash is empty.')
+			} else {
+				println('No items trashed from ${cwd}.')
+			}
 		}
-		if cli.kind != '' {
-			selected = selected.filter(it.kind.label() == cli.kind)
-		}
-		if cli.grep != '' {
-			selected = selected.filter(it.original_path.contains(cli.grep))
+		return
+	}
+	if cli.interactive {
+		selected = prompt_selection(selected)!
+		if selected.len == 0 {
+			return
 		}
 	}
 	if cli.dry_run {
 		if cli.json {
-			println(json2.encode(PurgePlan{
-				would_purge: selected.len
-				items:       json_entries(selected)
+			println(json2.encode(EmptyPlan{
+				emptied: selected.len
+				dry_run: true
+				items:   json_entries(selected)
 			}, escape_unicode: true))
 		} else if !cli.quiet {
 			for entry in selected {
 				println('Would purge ${entry.original_path}')
 			}
-			println('Would purge ${selected.len} item(s).')
+			println('Would permanently delete ${selected.len} item(s)${selection_scope(cli, cwd)}.')
 		}
 		return
 	}
-	if selected.len > 1 && !cli.yes {
-		if os.is_atty(0) == 0 {
-			return error('refusing to purge ${selected.len} items without --yes in non-interactive mode')
-		}
-		ans := os.input('Permanently delete ${selected.len} items? [y/N] ').trim_space().to_lower()
-		if ans != 'y' && ans != 'yes' {
-			println('Aborted.')
-			return
-		}
+	if !confirm_action(selected.len, 'Permanently delete', selection_scope(cli, cwd), cli, true)! {
+		println('Aborted.')
+		return
 	}
 	batch := store.purge_batch(selected)!
-	if batch.purged > 0 {
+	if batch.purged > 0 && cli.wait {
 		store.gc()!
 	}
 	if cli.json {
-		println(json2.encode(PurgeReport{
-			purged: batch.purged
-			failed: batch.failures.len
+		println(json2.encode(EmptyReport{
+			emptied: batch.purged
+			dry_run: false
 		}, escape_unicode: true))
 	} else if !cli.quiet {
 		println('Purged ${batch.purged} item(s).')
@@ -325,19 +303,16 @@ fn run_purge(store Store, cli Cli) ! {
 	}
 }
 
-fn run_empty(store Store, cli Cli) ! {
-	if cli.keep > 0 || cli.older_than_seconds > 0 {
-		return run_selective_empty(store, cli)
-	}
+// empty_whole_trash reports whether the selection covers the entire trash,
+// so the concurrency-safe whole-store empty path can be used.
+fn empty_whole_trash(cli Cli) bool {
+	return cli.all && cli.targets.len == 0 && !cli.recursive && !cli.interactive
+		&& cli.kind == '' && cli.grep == '' && cli.older_than_seconds == 0 && cli.keep == 0
+		&& cli.limit == 0
+}
+
+fn run_empty_whole(store Store, cli Cli, cwd string) ! {
 	count := store.count_items()
-	if cli.dry_run {
-		if cli.json {
-			println(json2.encode(EmptyReport{ emptied: count, dry_run: true }, escape_unicode: true))
-		} else if !cli.quiet {
-			println('Would permanently delete ${count} item(s) from ${store.root}.')
-		}
-		return
-	}
 	if count == 0 {
 		if cli.json {
 			println(json2.encode(EmptyReport{ emptied: 0, dry_run: false }, escape_unicode: true))
@@ -346,80 +321,15 @@ fn run_empty(store Store, cli Cli) ! {
 		}
 		return
 	}
-	if !cli.yes {
-		if os.is_atty(0) == 0 {
-			return error('refusing to empty the trash without --yes in non-interactive mode')
-		}
-		ans := os.input('Empty the trash at ${store.root} (${count} item(s))? [y/N] ').trim_space().to_lower()
-		if ans != 'y' && ans != 'yes' {
-			println('Aborted.')
-			return
-		}
+	if !confirm_action(count, 'Permanently delete', selection_scope(cli, cwd), cli, true)! {
+		println('Aborted.')
+		return
 	}
 	n := store.empty_wait(cli.wait)!
 	if cli.json {
 		println(json2.encode(EmptyReport{ emptied: n, dry_run: false }, escape_unicode: true))
 	} else if !cli.quiet {
 		println('Emptied ${n} item(s) from ${store.root}.')
-	}
-}
-
-fn run_selective_empty(store Store, cli Cli) ! {
-	scan := store.scan()
-	mut selected := filter_entries(scan.entries, ListFilter{
-		all:                true
-		older_than_seconds: cli.older_than_seconds
-		kind:               cli.kind
-		grep:               cli.grep
-	})
-	if cli.keep > 0 {
-		selected = if selected.len > cli.keep { selected[cli.keep..] } else { []Entry{} }
-	}
-	if cli.dry_run {
-		if cli.json {
-			println(json2.encode(EmptyReport{ emptied: selected.len, dry_run: true },
-				escape_unicode: true
-			))
-		} else if !cli.quiet {
-			for entry in selected {
-				println('Would purge ${entry.original_path}')
-			}
-			println('Would permanently delete ${selected.len} selected item(s).')
-		}
-		return
-	}
-	if selected.len == 0 {
-		if cli.json {
-			println(json2.encode(EmptyReport{ emptied: 0, dry_run: false }, escape_unicode: true))
-		} else if !cli.quiet {
-			println('No items match the retention policy.')
-		}
-		return
-	}
-	if !cli.yes {
-		if os.is_atty(0) == 0 {
-			return error('refusing to purge selected items without --yes in non-interactive mode')
-		}
-		ans := os.input('Permanently delete ${selected.len} selected item(s)? [y/N] ').trim_space().to_lower()
-		if ans != 'y' && ans != 'yes' {
-			println('Aborted.')
-			return
-		}
-	}
-	batch := store.purge_batch(selected)!
-	if batch.purged > 0 {
-		store.gc()!
-	}
-	if cli.json {
-		println(json2.encode(EmptyReport{
-			emptied: batch.purged
-			dry_run: false
-		}, escape_unicode: true))
-	} else if !cli.quiet {
-		println('Purged ${batch.purged} selected item(s).')
-	}
-	if batch.failures.len > 0 {
-		return error('${batch.failures.len} item(s) could not be purged')
 	}
 }
 
@@ -464,30 +374,4 @@ fn run_doctor(store Store, cli Cli) ! {
 		println('${format.short_id(item.id)}  ${item.reason}  [${item.action}]')
 	}
 	println('${report.broken} broken item(s), ${report.repaired} repaired, ${report.purged} purged.')
-}
-
-fn select_entries(entries []Entry, cli Cli) ![]Entry {
-	if cli.yes {
-		return entries
-	}
-	if os.is_atty(0) == 0 {
-		return error('--select requires a terminal; use --yes to restore all matches')
-	}
-	for i, entry in entries {
-		println('${i + 1:3}) ${format.short_id(entry.id)}  ${format.format_age(entry.trashed_at)}  ${entry.original_path}')
-	}
-	ans := os.input('Select item number, `a` for all, or `q` to quit: ').trim_space().to_lower()
-	if ans == 'q' || ans == '' {
-		return []
-	}
-	if ans == 'a' || ans == 'all' {
-		return entries
-	}
-	index := strconv.atoi(ans) or {
-		return error('invalid selection `${ans}`')
-	}
-	if index < 1 || index > entries.len {
-		return error('selection out of range: ${index}')
-	}
-	return [entries[index - 1]]
 }
