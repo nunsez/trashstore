@@ -26,7 +26,7 @@ fn main() {
 
 	store := trash.open(store_root) or { panic(err) }
 	mut start := time.now()
-	put_batch := store.put_many(paths, trash.PutOptions{}) or { panic(err) }
+	put_batch := store.put_many(paths) or { panic(err) }
 	if put_batch.failures.len > 0 {
 		panic(put_batch.failures[0].message)
 	}

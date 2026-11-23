@@ -3,6 +3,7 @@ module trash
 import internal.fsx
 import os
 
+@[params]
 pub struct RestoreOptions {
 pub:
 	all bool
@@ -102,7 +103,7 @@ fn (s Store) move_restore_data(entry_id string, data string, target string, mut 
 
 fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
 	marker := s.create_marker_opts('restore', entry.id, false) or {
-		return in_progress_error('item `${entry.id}` is already being restored or purged')
+		return in_progress_error('item `${entry.id}` is already being restored or emptied')
 	}
 	mut done := false
 	mut started := false

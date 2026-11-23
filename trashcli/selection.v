@@ -4,6 +4,7 @@ import internal.format
 import os
 import strconv
 
+@[params]
 pub struct SelectionOptions {
 pub:
 	targets            []string
@@ -46,25 +47,25 @@ pub fn resolve_selection(entries []Entry, opts SelectionOptions) ![]Entry {
 	mut base := if opts.targets.len > 0 {
 		collect_targets(entries, opts.targets, opts.recursive)!
 	} else {
-		filter_entries(entries, ListFilter{
+		filter_entries(entries,
 			cwd:       if opts.all { '' } else { opts.cwd }
 			recursive: opts.recursive
 			all:       opts.all
-		})
+		)
 	}
 	// --keep protects the newest N items of the base set before filters run,
 	// so retention never deletes the newest items even when a filter matches.
 	if opts.keep > 0 {
 		base = if base.len > opts.keep { base[opts.keep..] } else { []Entry{} }
 	}
-	return filter_entries(base, ListFilter{
+	return filter_entries(base,
 		all:                true
 		kind:               opts.kind
 		grep:               opts.grep
 		older_than_seconds: opts.older_than_seconds
 		sort:               opts.sort
 		limit:              opts.limit
-	})
+	)
 }
 
 fn collect_targets(entries []Entry, targets []string, recursive bool) ![]Entry {

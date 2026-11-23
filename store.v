@@ -15,6 +15,7 @@ pub type IdGen = fn () string
 pub type Clock = fn () time.Time
 
 // StoreOptions controls how a store is opened.
+@[params]
 pub struct StoreOptions {
 pub:
 	create              bool = true
@@ -56,7 +57,7 @@ fn (s Store) next_id() string {
 
 // open prepares a trash directory with default options.
 pub fn open(root string) !Store {
-	return open_with(root, StoreOptions{})
+	return open_with(root)
 }
 
 // open_with prepares a trash directory. Recovery is explicit via recover_if_needed().
@@ -403,8 +404,8 @@ fn (s Store) recover_locked() !RecoveryReport {
 				s.recover_restore(id)!
 				report.recovered++
 			}
-			'purge' {
-				s.recover_purge(id)!
+			'empty' {
+				s.recover_empty(id)!
 				report.recovered++
 			}
 			else {
@@ -493,7 +494,7 @@ fn (s Store) recover_restore(id string) ! {
 	}
 }
 
-fn (s Store) recover_purge(id string) ! {
+fn (s Store) recover_empty(id string) ! {
 	if os.is_link(s.gc_dir()) {
 		return invalid_target_error('garbage directory must not be a symlink')
 	}
@@ -543,6 +544,7 @@ pub fn (s Store) count_items() int {
 	return count
 }
 
+@[params]
 pub struct DoctorOptions {
 pub:
 	repair bool

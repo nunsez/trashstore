@@ -45,9 +45,7 @@ pub fn run(cli Cli) ! {
 		else {}
 	}
 
-	store := open_with(resolve_store(cli.store)!, StoreOptions{
-		sync: !cli.no_sync
-	})!
+	store := open_with(resolve_store(cli.store)!, sync: !cli.no_sync)!
 	if cli.no_sync {
 		eprintln(cli.palette().red('warning:') + ' --no-sync disables fsync durability guarantees')
 	}
@@ -85,7 +83,7 @@ fn warn_broken(broken []BrokenItem, cli Cli) {
 fn run_put(store Store, cli Cli) ! {
 	interactive := cli.preview || cli.interactive
 	if !cli.dry_run && !interactive {
-		batch := store.put_many(cli.targets, PutOptions{ recursive: cli.recursive })!
+		batch := store.put_many(cli.targets, recursive: cli.recursive)!
 		if cli.verbose && !cli.quiet {
 			for entry in batch.entries {
 				println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
@@ -105,7 +103,7 @@ fn run_put(store Store, cli Cli) ! {
 	}
 	mut failures := []string{}
 	for target in cli.targets {
-		planned := store.plan_put(target, PutOptions{ recursive: cli.recursive }) or {
+		planned := store.plan_put(target, recursive: cli.recursive) or {
 			failures << 'Failed to trash ${target}: ${err.msg()}'
 			continue
 		}
@@ -124,7 +122,7 @@ fn run_put(store Store, cli Cli) ! {
 				continue
 			}
 		}
-		entry := store.put(target, PutOptions{ recursive: cli.recursive }) or {
+		entry := store.put(target, recursive: cli.recursive) or {
 			failures << 'Failed to trash ${target}: ${err.msg()}'
 			continue
 		}
@@ -273,7 +271,7 @@ fn run_empty(store Store, cli Cli) ! {
 			}, escape_unicode: true))
 		} else if !cli.quiet {
 			for entry in selected {
-				println('Would purge ${entry.original_path}')
+				println('Would permanently delete ${entry.original_path}')
 			}
 			println('Would permanently delete ${selected.len} item(s)${selection_scope(cli, cwd)}.')
 		}
@@ -283,23 +281,23 @@ fn run_empty(store Store, cli Cli) ! {
 		println('Aborted.')
 		return
 	}
-	batch := store.purge_batch(selected)!
-	if batch.purged > 0 && cli.wait {
+	batch := store.empty_batch(selected)!
+	if batch.emptied > 0 && cli.wait {
 		store.gc()!
 	}
 	if cli.json {
 		println(json2.encode(EmptyReport{
-			emptied: batch.purged
+			emptied: batch.emptied
 			dry_run: false
 		}, escape_unicode: true))
 	} else if !cli.quiet {
-		println('Purged ${batch.purged} item(s).')
+		println('Permanently deleted ${batch.emptied} item(s).')
 	}
 	if batch.failures.len > 0 {
 		for failure in batch.failures {
 			eprintln(cli.palette().red('error:') + ' ${failure.id}: ${failure.message}')
 		}
-		return error('${batch.failures.len} item(s) could not be purged')
+		return error('${batch.failures.len} item(s) could not be deleted')
 	}
 }
 
@@ -358,10 +356,10 @@ fn run_where(store Store, cli Cli) ! {
 }
 
 fn run_doctor(store Store, cli Cli) ! {
-	report := store.doctor(DoctorOptions{
+	report := store.doctor(
 		repair: cli.doctor_repair
 		purge:  cli.doctor_purge
-	})!
+	)!
 	if cli.json {
 		println(json2.encode(report, escape_unicode: true))
 		return

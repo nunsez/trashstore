@@ -3,6 +3,7 @@ module trash
 import internal.fsx
 import os
 
+@[params]
 pub struct PutOptions {
 pub:
 	recursive bool

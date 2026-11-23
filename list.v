@@ -3,6 +3,7 @@ module trash
 import os
 import time
 
+@[params]
 pub struct ListFilter {
 pub:
 	cwd                string

@@ -204,7 +204,7 @@ fn test_run_put_and_restore() {
 	assert !os.exists(file)
 
 	store := open(store_path) or { panic(err) }
-	assert store.list(ListFilter{}).len == 1
+	assert store.list().len == 1
 
 	cli_run(['trash', '--store', store_path, 'restore', '--all']) or { panic(err) }
 	assert (os.read_file(file) or { '' }) == 'hello'
@@ -239,9 +239,9 @@ fn test_run_empty_target() {
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 
 	store := open(store_path) or { panic(err) }
-	entry := store.list(ListFilter{})[0]
+	entry := store.list()[0]
 	cli_run(['trash', '--store', store_path, 'empty', '--yes', entry.id]) or { panic(err) }
-	assert store.list(ListFilter{}).len == 0
+	assert store.list().len == 0
 }
 
 fn test_run_empty_requires_yes_when_not_interactive() {
@@ -263,10 +263,10 @@ fn test_run_empty_requires_yes_when_not_interactive() {
 	assert failed
 
 	store := open(store_path) or { panic(err) }
-	assert store.list(ListFilter{}).len == 1
+	assert store.list().len == 1
 
 	cli_run(['trash', '--store', store_path, 'empty', '--all', '--yes']) or { panic(err) }
-	assert store.list(ListFilter{}).len == 0
+	assert store.list().len == 0
 }
 
 fn test_run_restore_default_scope() {
@@ -303,7 +303,7 @@ fn test_run_restore_by_prefix() {
 	cli_write(file, 'x')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 	store := open(store_path) or { panic(err) }
-	id := store.list(ListFilter{})[0].id
+	id := store.list()[0].id
 	cli_run(['trash', '--store', store_path, 'restore', id[..8]]) or { panic(err) }
 	assert os.exists(file)
 }
@@ -319,7 +319,7 @@ fn test_run_dry_run_does_not_move() {
 	cli_run(['trash', '--store', store_path, '--dry-run', file]) or { panic(err) }
 	assert os.exists(file)
 	store := open(store_path) or { panic(err) }
-	assert store.list(ListFilter{}).len == 0
+	assert store.list().len == 0
 }
 
 fn test_run_where() {
@@ -360,7 +360,7 @@ fn test_doctor_repairs_id_mismatch() {
 	store := open(store_path) or { panic(err) }
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
-	entry := store.put(file, PutOptions{}) or { panic(err) }
+	entry := store.put(file) or { panic(err) }
 	mut meta := store.read_meta(entry.id) or { panic(err) }
 	meta.id = '00000000-0000-7000-8000-000000000099'
 	store.write_meta(entry.id, meta) or { panic(err) }
@@ -378,7 +378,7 @@ fn test_doctor_purge_removes_broken_item() {
 	store := open(store_path) or { panic(err) }
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
-	entry := store.put(file, PutOptions{}) or { panic(err) }
+	entry := store.put(file) or { panic(err) }
 	os.write_file(store.meta_path(entry.id), 'not json') or { panic(err) }
 	assert store.scan().broken.len == 1
 	cli_run(['trash', '--store', store_path, 'doctor', '--doctor-purge'])!
@@ -452,7 +452,7 @@ fn test_run_empty_keep() {
 	}
 	cli_run(['trash', '--store', store_path, 'empty', '--keep', '1', '--yes']) or { panic(err) }
 	store := open(store_path) or { panic(err) }
-	left := store.list(ListFilter{})
+	left := store.list()
 	assert left.len == 1
 	assert left[0].original_path == canonical_target_path(os.join_path(work, 'c.txt'))
 }

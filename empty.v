@@ -4,50 +4,38 @@ import internal.fsx
 import os
 import rand
 
-pub struct PurgeOptions {
-pub:
-	all bool
-}
-
-pub struct PurgeBatch {
+pub struct EmptyBatch {
 pub mut:
-	purged   int
+	emptied  int
 	failures []BatchFailure
 }
 
-// purge permanently removes one or more items.
-pub fn (s Store) purge(ref string, opts PurgeOptions) !int {
-	matches := s.find(ref)!
-	selected := if opts.all { matches } else { [matches[0]] }
-	return s.purge_entries(selected)
-}
-
-// purge_entries purges already resolved entries and then cleans .gc.
-pub fn (s Store) purge_entries(entries []Entry) !int {
-	batch := s.purge_batch(entries)!
+// empty_entries permanently deletes already resolved entries and then cleans .gc.
+pub fn (s Store) empty_entries(entries []Entry) !int {
+	batch := s.empty_batch(entries)!
 	if batch.failures.len > 0 {
 		return error(batch.failures[0].message)
 	}
-	if batch.purged > 0 {
+	if batch.emptied > 0 {
 		s.gc()!
 	}
-	return batch.purged
+	return batch.emptied
 }
 
-// purge_batch renames entries into .gc under one shared lock and reports
+// empty_batch renames entries into .gc under one shared lock and reports
 // per-item failures without losing successful results. Call gc() afterwards.
-pub fn (s Store) purge_batch(entries []Entry) !PurgeBatch {
+pub fn (s Store) empty_batch(entries []Entry) !EmptyBatch {
 	mut fl := s.lock_shared()!
 	defer {
 		fl.release()
 	}
-	mut batch := PurgeBatch{}
+	mut batch := EmptyBatch{}
 	for entry in entries {
-		s.purge_one_locked(entry) or {
-			batch.failures << batch_failure(entry.id, 'purge', err)
+		s.empty_one_locked(entry) or {
+			batch.failures << batch_failure(entry.id, 'empty', err)
 			continue
 		}
-		batch.purged++
+		batch.emptied++
 	}
 	s.sync_dir(s.items_dir())!
 	s.sync_dir(s.gc_dir())!
@@ -55,12 +43,12 @@ pub fn (s Store) purge_batch(entries []Entry) !PurgeBatch {
 	return batch
 }
 
-fn (s Store) purge_one_locked(entry Entry) ! {
+fn (s Store) empty_one_locked(entry Entry) ! {
 	if os.is_link(s.gc_dir()) {
 		return invalid_target_error('garbage directory must not be a symlink')
 	}
-	marker := s.create_marker_opts('purge', entry.id, false) or {
-		return in_progress_error('item `${entry.id}` is already being restored or purged')
+	marker := s.create_marker_opts('empty', entry.id, false) or {
+		return in_progress_error('item `${entry.id}` is already being restored or emptied')
 	}
 	mut done := false
 	mut renamed := false
@@ -72,7 +60,7 @@ fn (s Store) purge_one_locked(entry Entry) ! {
 	dest := os.join_path(s.gc_dir(), '${entry.id}-${s.next_id()}')
 	fsx.rename_noreplace(s.item_dir(entry.id), dest)!
 	renamed = true
-	failpoint('purge:after-rename')!
+	failpoint('empty:after-rename')!
 	s.remove_marker_opts(marker, false)
 	done = true
 }
