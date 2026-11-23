@@ -1,0 +1,155 @@
+.TH TRASH 1 "November 22, 2026" "trash 0.1.0" "User Commands"
+.SH NAME
+trash \- safe rm replacement with recovery
+.SH SYNOPSIS
+.B trash
+[\fIOPTIONS\fR] \fIPATH\fR...
+.br
+.B trash
+\fICOMMAND\fR [\fIOPTIONS\fR] [\fIARGS\fR]
+.SH DESCRIPTION
+.B trash
+moves files and directories into a private trash store and can restore or
+permanently purge them later. It never overwrites an existing file on restore;
+conflicts receive a \fB~N\fR suffix.
+.SH COMMANDS
+.TP
+.B put
+Move files and directories to the trash. This is the default when no command is
+given.
+.TP
+.B list
+List items trashed from the current directory. Use \fB-r\fR for the subtree and
+\fB--all\fR for the whole trash.
+.TP
+.B restore
+Restore the newest item, a path, an id, or a unique id prefix.
+\fB--from-cwd\fR restores exactly what \fBtrash list\fR shows.
+.TP
+.B purge
+Permanently delete matching items. This cannot be undone.
+.TP
+.B empty
+Permanently delete everything in the trash.
+.TP
+.B where
+Show the trash location and item count.
+.TP
+.B doctor
+Report broken trash items. With \fB--repair\fR, fix id mismatches,
+pending/restoring state, invalid metadata fields, and corrupt metadata when
+the payload still exists; with \fB--doctor-purge\fR, remove broken items.
+.TP
+.B help
+Show help for a command.
+.TP
+.B version
+Show the program version.
+.SH OPTIONS
+.TP
+.B \-\-graveyard \fIPATH\fR
+Use \fIPATH\fR as the trash store. Defaults to \fB$GRAVEYARD\fR,
+\fB$XDG_DATA_HOME/trash\fR, or \fB~/.local/share/trash\fR.
+.TP
+.B \-r, \-\-recursive
+Required to trash a directory. With \fBlist\fR, include the current directory
+subtree. With \fBrestore --from-cwd\fR, restore the same subtree.
+.TP
+.B \-i, \-\-inspect
+Show a preview and ask for confirmation before trashing.
+.TP
+.B \-\-dry\-run
+Show what would happen without changing anything.
+.TP
+.B \-y, \-\-yes
+Do not ask for confirmation. Required for non-interactive \fBempty\fR and
+multi-item \fBpurge\fR.
+.TP
+.B \-\-all
+With \fBlist\fR, show the whole trash. With \fBrestore\fR or \fBpurge\fR,
+operate on every match for each path.
+.TP
+.B \-\-json
+Print machine-readable JSON where supported.
+.TP
+.B \-\-long, \-\-full\-id
+Show full ids, kinds, and full timestamps in \fBlist\fR.
+.TP
+.B \-\-limit \fIN\fR
+Limit \fBlist\fR output to \fIN\fR items.
+.TP
+.B \-\-sort \fIMODE\fR
+Sort \fBlist\fR by \fBdate\fR, \fBsize\fR, \fBpath\fR, or \fBkind\fR.
+.TP
+.B \-\-kind \fIKIND\fR
+Filter by \fBfile\fR, \fBdir\fR, \fBsymlink\fR, or \fBother\fR.
+.TP
+.B \-\-grep \fIPATTERN\fR
+Filter by a substring of the original path.
+.TP
+.B \-\-older\-than \fIAGE\fR
+Filter or purge items older than an age such as \fB30d\fR, \fB12h\fR,
+\fB5m\fR, or \fB10s\fR.
+.TP
+.B \-\-keep \fIN\fR
+With \fBempty\fR, keep the newest \fIN\fR items.
+.TP
+.B \-\-select
+With \fBrestore\fR, interactively choose one item.
+.TP
+.B \-\-repair
+With \fBdoctor\fR, repair metadata where possible.
+.TP
+.B \-\-doctor\-purge
+With \fBdoctor\fR, permanently remove broken items.
+.TP
+.B \-\-from\-cwd
+Restore the items shown by \fBtrash list\fR.
+.TP
+.B \-\-wait
+With \fBempty\fR, wait for permanent deletion instead of deferring GC.
+.TP
+.B \-\-verbose
+Explain what is happening.
+.TP
+.B \-\-quiet
+Suppress non-error output.
+.TP
+.B \-\-no\-color
+Disable colours. The \fBNO_COLOR\fR environment variable is also honoured.
+.TP
+.B \-\-no\-sync
+Disable fsync durability. This is unsafe: data may be lost after a crash.
+Use only for disposable stores or filesystems that cannot fsync directories.
+.SH ENVIRONMENT
+.TP
+.B GRAVEYARD
+Default trash store.
+.TP
+.B XDG_DATA_HOME
+Used to derive \fB$XDG_DATA_HOME/trash\fR.
+.TP
+.B NO_COLOR
+Disable colours when set.
+.SH EXIT STATUS
+0 on success, 1 on operational failure, 2 on invalid arguments.
+.SH EXAMPLES
+trash report.txt
+.PP
+trash -r build/
+.PP
+trash list -r
+.PP
+trash restore --from-cwd
+.PP
+trash purge --all ./report.txt
+.PP
+trash empty --yes
+.PP
+trash empty --older-than 30d --yes
+.PP
+trash purge --older-than 7d --dry-run
+.PP
+trash doctor --repair
+.SH SEE ALSO
+.BR rm (1)

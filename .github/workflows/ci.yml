@@ -1,0 +1,108 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  release:
+    types: [published]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vlang/setup-v@v1
+        with:
+          version: latest
+      - run: v fmt -verify .
+      - run: v vet .
+      - run: v test .
+      - run: v -prod test .
+      - run: v -prod -o /tmp/trash ./cmd/trash
+      - if: runner.os == 'Linux'
+        run: shellcheck scripts/*.sh
+      - run: if command -v mandoc >/dev/null; then mandoc -Tlint trash.1; fi
+      - run: ./scripts/concurrency_test.sh /tmp/trash
+      - run: ./scripts/cross_device_test.sh /tmp/trash
+
+  release-binaries:
+    if: github.event_name == 'release'
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-amd64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-15-intel
+            target: darwin-amd64
+          - os: macos-15
+            target: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vlang/setup-v@v1
+        with:
+          version: latest
+      - name: Verify tag matches the declared app version
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          app_version="$(sed -n "s/^pub const app_version = '\(.*\)'$/\1/p" version.v)"
+          mod_version="$(sed -n "s/^[[:space:]]*version:[[:space:]]*'\(.*\)'$/\1/p" v.mod)"
+          if [ -z "$app_version" ] || [ -z "$mod_version" ]; then
+            echo "::error::could not read app_version from version.v or v.mod"
+            exit 1
+          fi
+          if [ "$tag_version" != "$app_version" ] || [ "$tag_version" != "$mod_version" ]; then
+            echo "::error::tag v${tag_version} does not match version.v (${app_version}) and v.mod (${mod_version})"
+            exit 1
+          fi
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="trash-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}/completions"
+          v -prod -o trash ./cmd/trash
+          cp trash "dist/${name}/"
+          cp trash.1 LICENSE README.md "dist/${name}/"
+          cp completions/* "dist/${name}/completions/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          rm -rf "dist/${name}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release-assets:
+    if: github.event_name == 'release'
+    needs: release-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz | sort -k2 > checksums.txt
+          cat checksums.txt
+      - name: Upload assets to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --clobber
