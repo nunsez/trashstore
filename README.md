@@ -150,24 +150,6 @@ Run `trash help <command>` for command-specific flags and examples.
 JSON is never coloured. Errors still go to stderr and set a non-zero exit
 status.
 
-
-## Store layout
-
-```
-<root>/
-  items/<id>/
-    meta.json
-    data
-  inflight/          # in-progress operation markers
-  .gc/               # renamed here before permanent deletion
-  .lock              # shared for put/restore, exclusive for empty/gc
-```
-
-`meta.json` stores the id, state (`pending`, `trashed`, `restoring`),
-percent-encoded original path, RFC3339 deletion time, kind, size, and the
-restore target for crash recovery. Metadata is validated on read: id mismatch,
-unknown state/kind, relative path, or invalid timestamp marks the item broken.
-
 ## Recovery model
 
 - `put`: create item dir -> marker -> write `pending` metadata -> move payload
@@ -277,7 +259,3 @@ JSON. Crash points can be injected with `TRASH_TEST_FAILPOINTS=1` and
 - `rename_noreplace` requires filesystem support. On filesystems without
   `RENAME_NOREPLACE` / `RENAME_EXCL`, restore and purge fail instead of
   falling back to an unsafe overwrite.
-
-## License
-
-AGPLv3. See [LICENSE](LICENSE).
