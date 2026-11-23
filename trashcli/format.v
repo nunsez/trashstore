@@ -1,7 +1,9 @@
 module trashcli
 
 import internal.format
+import math
 import os
+import term
 
 pub struct Palette {
 pub:
@@ -10,34 +12,34 @@ pub:
 
 fn new_palette(no_color bool) Palette {
 	return Palette{
-		enabled: !no_color && os.getenv('NO_COLOR') == '' && os.is_atty(1) != 0
+		enabled: !no_color && os.getenv('NO_COLOR') == '' && term.can_show_color_on_stdout()
 	}
 }
 
 fn (p Palette) dim(s string) string {
 	if p.enabled {
-		return '\x1b[2m${s}\x1b[0m'
+		return term.dim(s)
 	}
 	return s
 }
 
 fn (p Palette) bold(s string) string {
 	if p.enabled {
-		return '\x1b[1m${s}\x1b[0m'
+		return term.bold(s)
 	}
 	return s
 }
 
 fn (p Palette) red(s string) string {
 	if p.enabled {
-		return '\x1b[31m${s}\x1b[0m'
+		return term.red(s)
 	}
 	return s
 }
 
 fn (p Palette) green(s string) string {
 	if p.enabled {
-		return '\x1b[32m${s}\x1b[0m'
+		return term.green(s)
 	}
 	return s
 }
@@ -54,17 +56,19 @@ fn display_path(path string, cwd string) string {
 }
 
 fn pad_left(s string, width int) string {
-	if s.len >= width {
+	n := term.printable_len(s)
+	if n >= width {
 		return s
 	}
-	return ' '.repeat(width - s.len) + s
+	return ' '.repeat(width - n) + s
 }
 
 fn pad_right(s string, width int) string {
-	if s.len >= width {
+	n := term.printable_len(s)
+	if n >= width {
 		return s
 	}
-	return s + ' '.repeat(width - s.len)
+	return s + ' '.repeat(width - n)
 }
 
 pub struct JsonEntry {
@@ -103,7 +107,7 @@ struct TableRow {
 }
 
 fn max_width(current int, value string) int {
-	return if value.len > current { value.len } else { current }
+	return math.max(current, term.printable_len(value))
 }
 
 // table_lines renders the header and one line per row. Every cell is padded to

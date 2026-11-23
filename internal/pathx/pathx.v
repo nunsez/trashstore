@@ -42,8 +42,7 @@ pub fn is_path_within(path string, base string) bool {
 }
 
 fn is_unreserved(c u8) bool {
-	return (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || (c >= `0` && c <= `9`)
-		|| c == `-` || c == `.` || c == `_` || c == `~`
+	return c.is_alnum() || c == `-` || c == `.` || c == `_` || c == `~`
 }
 
 // percent_encode_path encodes a raw filesystem path for storage in metadata.

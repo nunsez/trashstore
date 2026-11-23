@@ -583,6 +583,19 @@ fn test_table_long_layout() {
 	}
 }
 
+fn test_padding_uses_printable_width() {
+	assert pad_right('界', 3) == '界 '
+	assert pad_left('界', 3) == ' 界'
+	assert pad_right('e\u0301', 2) == 'e\u0301 '
+	assert pad_left('e\u0301', 2) == ' e\u0301'
+	assert pad_right('\x1b[31mred\x1b[0m', 5) == '\x1b[31mred\x1b[0m  '
+	assert pad_left('\x1b[31mred\x1b[0m', 5) == '  \x1b[31mred\x1b[0m'
+	assert pad_right('界', 1) == '界'
+	assert pad_left('界', 1) == '界'
+	assert max_width(0, '界') == 2
+	assert max_width(5, '界') == 5
+}
+
 fn test_parse_rejects_removed_quiet_flag() {
 	mut failed := false
 	Cli.parse(['trash', 'list', '--quiet']) or { failed = true }

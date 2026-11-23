@@ -339,7 +339,7 @@ fn run_where(store Store, cli Cli) ! {
 	println('${report.root}')
 	println('${report.items} item(s), ${format.format_size(report.size)}')
 	if report.oldest != '' {
-		println('oldest ${format.format_time((time.parse(report.oldest) or { time.now() }).local())}  newest ${format.format_time((time.parse(report.newest) or { time.now() }).local())}')
+		println('oldest ${format.format_time(time.parse(report.oldest) or { time.now() })}  newest ${format.format_time(time.parse(report.newest) or { time.now() })}')
 	}
 	if report.broken > 0 {
 		println(cli.palette().red('${report.broken} broken item(s)'))
