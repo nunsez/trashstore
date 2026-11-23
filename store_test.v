@@ -1,5 +1,6 @@
 module trash
 
+import internal.format
 import internal.fsx
 import json2
 import os
@@ -794,6 +795,98 @@ fn test_find_rejects_ambiguous_id_prefix() {
 	}
 	mut failed := false
 	store.find('aaa') or { failed = true }
+	assert failed
+}
+
+fn test_short_id_resolves_by_trailing_hex() {
+	root := core_dir('short_id_find')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	path := os.join_path(root, 'a.txt')
+	core_write(path, 'a')
+	entry := core_put(store, path, false)
+	short := format.short_id(entry.id)
+	assert short.len == 8
+	assert short == entry.id.replace('-', '')[24..]
+	found := store.find(short)!
+	assert found.len == 1
+	assert found[0].id == entry.id
+	// A prefix of the short id resolves as well.
+	prefixed := store.find(short[..4])!
+	assert prefixed.len == 1
+	assert prefixed[0].id == entry.id
+	// The full id keeps working.
+	by_full := store.find(entry.id)!
+	assert by_full.len == 1
+	assert by_full[0].id == entry.id
+}
+
+fn test_short_ids_stay_distinct_within_one_second() {
+	root := core_dir('short_id_distinct')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	mut shorts := map[string]bool{}
+	mut ids := []string{}
+	for name in ['a.txt', 'b.txt', 'c.txt', 'd.txt'] {
+		path := os.join_path(root, name)
+		core_write(path, name)
+		entry := core_put(store, path, false)
+		short := format.short_id(entry.id)
+		assert short !in shorts
+		shorts[short] = true
+		ids << entry.id
+	}
+	for id in ids {
+		found := store.find(format.short_id(id))!
+		assert found.len == 1
+		assert found[0].id == id
+	}
+}
+
+fn test_restore_by_short_id() {
+	root := core_dir('short_id_restore')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	path := os.join_path(root, 'a.txt')
+	core_write(path, 'a')
+	entry := core_put(store, path, false)
+	assert !os.exists(path)
+	result := store.restore(format.short_id(entry.id))!
+	assert result.len == 1
+	assert os.read_file(path) or { '' } == 'a'
+}
+
+fn test_find_rejects_ambiguous_short_id() {
+	root := core_dir('short_id_ambiguous')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	for id in ['aaaa-1111-2222-3333-4444deadbeef', 'bbbb-1111-2222-3333-5555deadbeef'] {
+		item := store.item_dir(id)
+		os.mkdir_all(item) or { panic(err) }
+		core_write(store.data_path(id), 'x')
+		meta := Meta{
+			id:            id
+			state:         'trashed'
+			original_path: percent_encode_path(os.join_path(root, '${id}.txt'))
+			trashed_at:    time.now().format_rfc3339()
+			kind:          'file'
+			size:          1
+		}
+		store.write_meta_atomic(item, meta) or { panic(err) }
+	}
+	mut failed := false
+	store.find('deadbeef') or { failed = true }
+	assert failed
+	failed = false
+	store.find('dead') or { failed = true }
 	assert failed
 }
 

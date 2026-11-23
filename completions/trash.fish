@@ -3,7 +3,6 @@ complete -c trash -f
 complete -c trash -n "not __fish_seen_subcommand_from $commands" -a "$commands"
 complete -c trash -l store -r -d 'Use PATH as the trash store'
 complete -c trash -l verbose -d 'Explain what is happening'
-complete -c trash -l quiet -d 'Suppress non-error output'
 complete -c trash -l no-color -d 'Disable colours'
 complete -c trash -l no-sync -d 'Disable fsync durability'
 complete -c trash -s h -l help -d 'Show help'

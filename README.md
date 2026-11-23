@@ -59,12 +59,12 @@ trash list --all --older-than 30d
 # Restore the current directory selection, an item, or a path
 trash restore
 trash restore -i
-trash restore 01a203aa
+trash restore 8bd42d97
 trash restore ./report.txt
 trash restore --all --limit 1
 
 # Permanently delete an item, a selection, or the whole store
-trash empty --yes 01a203aa
+trash empty --yes 8bd42d97
 trash empty
 trash empty --all
 
@@ -82,6 +82,10 @@ trash doctor
 trash doctor --repair
 trash list --json
 ```
+
+`list` shows the last eight hex characters of each item id. `restore` and
+`empty` accept that short id, any unique prefix of it, a unique prefix of the
+full id, or the full id printed by `--long`.
 
 The default store is `$XDG_DATA_HOME/trash`, falling back to
 `~/.local/share/trash`. Override it with `--store` or `$TRASH_STORE`; `--store`

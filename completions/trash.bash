@@ -3,7 +3,7 @@ _trash() {
     _init_completion || return
 
     local commands="put list restore empty where doctor help version"
-    local global_opts="--store --verbose --quiet --no-color --no-sync -h --help -V --version"
+    local global_opts="--store --verbose --no-color --no-sync -h --help -V --version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$commands $global_opts" -- "$cur") )

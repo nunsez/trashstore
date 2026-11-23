@@ -2,6 +2,7 @@ module trash
 
 import os
 import time
+import internal.format
 
 @[params]
 pub struct ListFilter {
@@ -149,8 +150,9 @@ pub fn (s Store) list(filter ListFilter) []Entry {
 	return filter_entries(s.scan().entries, filter)
 }
 
-// find_in resolves an item by full id, unique id prefix, or original path
-// against an already scanned entry list. The result is ordered newest first.
+// find_in resolves an item by full id, short id (as shown by `trash list`),
+// a unique prefix of either, or original path, against an already scanned entry
+// list. The result is ordered newest first.
 pub fn find_in(entries []Entry, ref string) ![]Entry {
 	if ref == '' {
 		if entries.len == 0 {
@@ -158,23 +160,32 @@ pub fn find_in(entries []Entry, ref string) ![]Entry {
 		}
 		return [entries[0]]
 	}
-	mut exact := []Entry{}
-	mut prefixed := []Entry{}
+	mut exact_id := []Entry{}
+	mut exact_short := []Entry{}
+	mut id_prefix := []Entry{}
+	mut short_prefix := []Entry{}
 	for entry in entries {
+		short := format.short_id(entry.id)
 		if entry.id == ref {
-			exact << entry
+			exact_id << entry
+		} else if short == ref {
+			exact_short << entry
 		} else if entry.id.starts_with(ref) {
-			prefixed << entry
+			id_prefix << entry
+		} else if short.starts_with(ref) {
+			short_prefix << entry
 		}
 	}
-	if exact.len > 0 {
-		return exact
-	}
-	if prefixed.len > 1 {
-		return ambiguous_error('ambiguous id prefix `${ref}`; use a longer prefix')
-	}
-	if prefixed.len == 1 {
-		return prefixed
+	// Prefer the most specific interpretation: an exact id beats an exact short
+	// id, which beats any prefix match.
+	for matches in [exact_id, exact_short, id_prefix, short_prefix] {
+		if matches.len == 0 {
+			continue
+		}
+		if matches.len > 1 {
+			return ambiguous_error('ambiguous id `${ref}` matches ${matches.len} items; run `trash list --long` to see full ids')
+		}
+		return matches
 	}
 	candidate := canonical_target_path(ref)
 	mut by_path := []Entry{}
@@ -189,7 +200,7 @@ pub fn find_in(entries []Entry, ref string) ![]Entry {
 	return by_path
 }
 
-// find resolves an item by full id, unique id prefix, or original path.
+// find resolves an item by full id, short id, unique id prefix, or original path.
 pub fn (s Store) find(ref string) ![]Entry {
 	if ref != '' && is_safe_id(ref) && !os.is_link(s.item_dir(ref)) && os.is_dir(s.item_dir(ref)) {
 		entry := s.read_entry(ref)!

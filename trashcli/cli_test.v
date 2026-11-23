@@ -1,6 +1,8 @@
 module trashcli
 
 import os
+import time
+import internal.format
 
 fn C.dup(fd int) int
 fn C.dup2(oldfd int, newfd int) int
@@ -485,4 +487,104 @@ fn test_resolve_selection_recursive_target() {
 	})!
 	assert selected.len == 1
 	assert selected[0].original_path == canonical_target_path(file)
+}
+
+fn table_test_entries() []Entry {
+	now := time.now()
+	return [
+		Entry{
+			id:            '01a20888-4019-7800-9e03-53368bd42d97'
+			original_path: '/tmp/t/report.txt'
+			trashed_at:    now.add(-2 * time.hour)
+			kind:          .file
+			size:          12 * 1024
+			state:         .trashed
+		},
+		Entry{
+			id:            '01a20888-4032-7600-a8eb-2a3b7cb182b1'
+			original_path: '/tmp/t/build'
+			trashed_at:    now.add(-5 * 24 * time.hour)
+			kind:          .dir
+			size:          3 * 1024 * 1024
+			state:         .trashed
+		},
+		Entry{
+			id:            '01a20888-401b-7881-9b09-b1b4c691f1fa'
+			original_path: '/tmp/t/notes/old.md'
+			trashed_at:    now.add(-360 * 24 * time.hour)
+			kind:          .file
+			size:          900
+			state:         .trashed
+		},
+	]
+}
+
+fn test_table_header_and_alignment() {
+	entries := table_test_entries()
+	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	assert lines.len == entries.len + 1
+	assert lines[0] == 'ID        AGE         SIZE  PATH'
+	assert lines[1] == '8bd42d97  2h ago    12 KiB  report.txt'
+	assert lines[2] == '7cb182b1  5d ago         -  build'
+	assert lines[3] == 'c691f1fa  12mo ago   900 B  notes/old.md'
+	// Every row must start its path at the same column as the header, otherwise
+	// the size and path columns drift from row to row.
+	path_col := lines[0].index('PATH') or { -1 }
+	assert path_col > 0
+	for i, entry in entries {
+		line := lines[i + 1]
+		path := display_path(entry.original_path, '/tmp/t')
+		assert line.len == path_col + path.len
+		assert line[path_col..] == path
+		assert line[path_col - 2..path_col] == '  '
+		short := format.short_id(entry.id)
+		assert line[0..short.len] == short
+	}
+}
+
+fn test_table_wide_size_keeps_columns() {
+	mut entries := table_test_entries()
+	entries << Entry{
+		id:            'deadbeef0000000000000000000000ff'
+		original_path: '/tmp/t/big.iso'
+		trashed_at:    time.now().add(-90 * time.second)
+		kind:          .file
+		size:          u64(1024) * 1024 * 1024 * 1024
+		state:         .trashed
+	}
+	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	assert lines[entries.len].contains('1024 GiB')
+	path_col := lines[0].index('PATH') or { -1 }
+	assert path_col > 0
+	for i, entry in entries {
+		path := display_path(entry.original_path, '/tmp/t')
+		assert lines[i + 1].len == path_col + path.len
+		assert lines[i + 1][path_col..] == path
+	}
+}
+
+fn test_table_long_layout() {
+	entries := table_test_entries()
+	lines := table_lines(entries, '/tmp/t', true, Palette{})
+	assert lines.len == entries.len + 1
+	assert lines[0].starts_with('ID')
+	assert lines[0].contains('DELETED')
+	assert lines[0].contains('KIND')
+	assert lines[0].ends_with('SIZE  PATH')
+	// --long prints full ids and kinds.
+	assert lines[1].starts_with(entries[0].id)
+	assert lines[1].contains('file')
+	assert lines[2].contains('dir')
+	path_col := lines[0].index('PATH') or { -1 }
+	for i, entry in entries {
+		path := display_path(entry.original_path, '/tmp/t')
+		assert lines[i + 1].len == path_col + path.len
+		assert lines[i + 1][path_col..] == path
+	}
+}
+
+fn test_parse_rejects_removed_quiet_flag() {
+	mut failed := false
+	Cli.parse(['trash', 'list', '--quiet']) or { failed = true }
+	assert failed
 }

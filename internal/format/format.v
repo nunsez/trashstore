@@ -2,12 +2,16 @@ module format
 
 import time
 
-// short_id returns the first eight characters of an item id.
+// short_id returns the last eight hex characters of an item id, without
+// dashes. Item ids are UUIDv7, whose leading bits are a millisecond timestamp,
+// so the leading characters are shared by every item trashed within ~65
+// seconds. The trailing characters carry the random part and stay distinct.
 pub fn short_id(id string) string {
-	if id.len > 8 {
-		return id[..8]
+	hex := id.replace('-', '')
+	if hex.len <= 8 {
+		return hex
 	}
-	return id
+	return hex[hex.len - 8..]
 }
 
 // format_size returns a compact human-readable byte size.

@@ -17,7 +17,6 @@ fn general_help() string {
 		'Global options:\n' +
 		'  --store PATH       Use PATH as the trash store\n' +
 		'  --verbose          Explain what is happening\n' +
-		'  --quiet            Suppress non-error output\n' +
 		'  --no-color         Disable colours\n' +
 		'  --no-sync          Disable fsync durability (unsafe)\n' +
 		'  -h, --help         Show this help\n' +

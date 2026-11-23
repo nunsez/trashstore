@@ -16,7 +16,6 @@ _trash() {
     _arguments -C \
         '--store[use PATH as the trash store]:path:_files -/' \
         '--verbose[explain what is happening]' \
-        '--quiet[suppress non-error output]' \
         '--no-color[disable colours]' '--no-sync[disable fsync durability]' \
         '(-h --help)'{-h,--help}'[show help]' \
         '(-V --version)'{-V,--version}'[show version]' \

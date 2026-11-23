@@ -48,7 +48,6 @@ pub mut:
 	help_command       ?Command
 	store              string
 	verbose            bool
-	quiet              bool
 	no_color           bool
 	no_sync            bool
 	json               bool
@@ -282,7 +281,6 @@ pub fn Cli.parse(args []string) !Cli {
 		}
 		match arg {
 			'--verbose' { cli.verbose = true }
-			'--quiet' { cli.quiet = true }
 			'--no-color' { cli.no_color = true }
 			'--no-sync' { cli.no_sync = true }
 			'--json' { cli.json = true }
@@ -310,9 +308,6 @@ pub fn Cli.parse(args []string) !Cli {
 }
 
 fn (cli Cli) validate() ! {
-	if cli.verbose && cli.quiet {
-		return error('--verbose and --quiet cannot be combined')
-	}
 	if cli.json && !(cli.command in [.list, .restore, .empty, .where, .doctor]) {
 		return error('--json is not supported by `${cli.command.label()}`')
 	}

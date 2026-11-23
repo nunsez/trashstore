@@ -50,13 +50,11 @@ pub fn run(cli Cli) ! {
 		eprintln(cli.palette().red('warning:') + ' --no-sync disables fsync durability guarantees')
 	}
 	recovery := store.recover_if_needed()!
-	if recovery.recovered > 0 && cli.verbose && !cli.quiet {
+	if recovery.recovered > 0 && cli.verbose {
 		eprintln('Recovered ${recovery.recovered} interrupted trash operation(s).')
 	}
-	if !cli.quiet {
-		for warning in recovery.warnings {
-			eprintln(cli.palette().red('warning:') + ' ' + warning)
-		}
+	for warning in recovery.warnings {
+		eprintln(cli.palette().red('warning:') + ' ' + warning)
 	}
 
 	match cli.command {
@@ -71,9 +69,6 @@ pub fn run(cli Cli) ! {
 }
 
 fn warn_broken(broken []BrokenItem, cli Cli) {
-	if cli.quiet {
-		return
-	}
 	p := cli.palette()
 	for item in broken {
 		eprintln(p.red('warning:') + ' broken trash item ${format.short_id(item.id)}: ${item.reason}')
@@ -84,7 +79,7 @@ fn run_put(store Store, cli Cli) ! {
 	interactive := cli.preview || cli.interactive
 	if !cli.dry_run && !interactive {
 		batch := store.put_many(cli.targets, recursive: cli.recursive)!
-		if cli.verbose && !cli.quiet {
+		if cli.verbose {
 			for entry in batch.entries {
 				println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
 			}
@@ -111,9 +106,7 @@ fn run_put(store Store, cli Cli) ! {
 			print_preview_info(planned.original_path)
 		}
 		if cli.dry_run {
-			if !cli.quiet {
-				println('Would trash ${planned.original_path}')
-			}
+			println('Would trash ${planned.original_path}')
 			continue
 		}
 		if interactive && !cli.yes {
@@ -126,7 +119,7 @@ fn run_put(store Store, cli Cli) ! {
 			failures << 'Failed to trash ${target}: ${err.msg()}'
 			continue
 		}
-		if cli.verbose && !cli.quiet {
+		if cli.verbose {
 			println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
 		}
 	}
@@ -145,12 +138,10 @@ fn run_list(store Store, cli Cli) ! {
 		return
 	}
 	if entries.len == 0 {
-		if !cli.quiet {
-			if cli.all {
-				println('Trash is empty.')
-			} else {
-				println('No items trashed from ${cwd}.')
-			}
+		if cli.all {
+			println('Trash is empty.')
+		} else {
+			println('No items trashed from ${cwd}.')
 		}
 		return
 	}
@@ -165,7 +156,7 @@ fn run_restore(store Store, cli Cli) ! {
 	if selected.len == 0 {
 		if cli.json {
 			println('[]')
-		} else if !cli.quiet {
+		} else {
 			if cli.all {
 				println('Trash is empty.')
 			} else {
@@ -189,7 +180,7 @@ fn run_restore(store Store, cli Cli) ! {
 				original_path: entry.original_path
 				restored_to:   target
 			}
-			if !cli.json && !cli.quiet {
+			if !cli.json {
 				println('Would restore ${entry.original_path} -> ${target}')
 			}
 		}
@@ -213,7 +204,7 @@ fn run_restore(store Store, cli Cli) ! {
 			}
 		}
 		println(json2.encode(plans, escape_unicode: true))
-	} else if !cli.quiet {
+	} else {
 		for result in batch.results {
 			println('Restored ${result.entry.original_path} -> ${result.restored_to}')
 		}
@@ -247,7 +238,7 @@ fn run_empty(store Store, cli Cli) ! {
 					escape_unicode: true
 				))
 			}
-		} else if !cli.quiet {
+		} else {
 			if cli.all {
 				println('Trash is empty.')
 			} else {
@@ -269,7 +260,7 @@ fn run_empty(store Store, cli Cli) ! {
 				dry_run: true
 				items:   json_entries(selected)
 			}, escape_unicode: true))
-		} else if !cli.quiet {
+		} else {
 			for entry in selected {
 				println('Would permanently delete ${entry.original_path}')
 			}
@@ -290,7 +281,7 @@ fn run_empty(store Store, cli Cli) ! {
 			emptied: batch.emptied
 			dry_run: false
 		}, escape_unicode: true))
-	} else if !cli.quiet {
+	} else {
 		println('Permanently deleted ${batch.emptied} item(s).')
 	}
 	if batch.failures.len > 0 {
@@ -314,7 +305,7 @@ fn run_empty_whole(store Store, cli Cli, cwd string) ! {
 	if count == 0 {
 		if cli.json {
 			println(json2.encode(EmptyReport{ emptied: 0, dry_run: false }, escape_unicode: true))
-		} else if !cli.quiet {
+		} else {
 			println('Trash is already empty.')
 		}
 		return
@@ -326,7 +317,7 @@ fn run_empty_whole(store Store, cli Cli, cwd string) ! {
 	n := store.empty_wait(cli.wait)!
 	if cli.json {
 		println(json2.encode(EmptyReport{ emptied: n, dry_run: false }, escape_unicode: true))
-	} else if !cli.quiet {
+	} else {
 		println('Emptied ${n} item(s) from ${store.root}.')
 	}
 }

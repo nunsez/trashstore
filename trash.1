@@ -118,15 +118,16 @@ With \fBempty\fR, wait for permanent deletion instead of deferring GC.
 .B \-\-verbose
 Explain what is happening.
 .TP
-.B \-\-quiet
-Suppress non-error output.
-.TP
 .B \-\-no\-color
 Disable colours. The \fBNO_COLOR\fR environment variable is also honoured.
 .TP
 .B \-\-no\-sync
 Disable fsync durability. This is unsafe: data may be lost after a crash.
 Use only for disposable stores or filesystems that cannot fsync directories.
+.SH ITEM IDS
+\fBlist\fR shows the last eight hex characters of each item id. \fBrestore\fR
+and \fBempty\fR accept that short id, any unique prefix of it, a unique prefix
+of the full id, or the full id printed by \fB\-\-long\fR.
 .SH ENVIRONMENT
 .TP
 .B TRASH_STORE
