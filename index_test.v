@@ -135,6 +135,38 @@ fn test_index_transaction_rollback() {
 	assert count == 0
 }
 
+fn test_index_batch_rolls_back_on_error() {
+	root, store := index_test_store('batch-rollback')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	item := IndexItem{
+		id:            'dup'
+		original_path: '/tmp/dup'
+		trashed_at:    time.unix_nano(1_700_000_000_000_000_000)
+		kind:          .file
+		state:         .trashed
+	}
+	mut failed := false
+	store.insert_items_batch([item, item]) or {
+		failed = true
+		assert err.msg().contains('UNIQUE')
+	}
+	assert failed
+	// Nothing from the aborted batch is visible.
+	count := store.item_count()!
+	assert count == 0
+	// The failed batch must have rolled back, not left an open transaction:
+	// a fresh BEGIN IMMEDIATE would otherwise fail with
+	// "cannot start a transaction within a transaction".
+	mut db := store.db
+	db.begin()!
+	db.rollback()
+	// The connection is usable afterwards.
+	store.insert_item(item)!
+	assert store.item_count()! == 1
+}
+
 fn test_index_table_is_strict() {
 	root, store := index_test_store('strict')
 	defer {

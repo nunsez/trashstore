@@ -115,25 +115,24 @@ fn (s Store) ensure_schema(mut db sqlite.Db) ! {
 		// BEGIN IMMEDIATE takes the write lock, so a second process opening the
 		// same fresh store waits and then finds the schema already created.
 		db.begin()!
+		mut committed := false
+		defer {
+			if !committed {
+				db.rollback()
+			}
+		}
 		locked_version := index_schema_version(mut db)!
 		locked_fresh := index_is_fresh(mut db)!
 		if locked_version == latest_schema_version {
-			db.rollback()
 			return
 		}
 		if locked_version != 0 || !locked_fresh {
-			db.rollback()
 			return schema_mismatch_error('index `${s.index_path()}` changed while opening; re-run the command', s.root)
 		}
-		db.exec(schema_v2) or {
-			db.rollback()
-			return err
-		}
-		db.exec('PRAGMA user_version = ${latest_schema_version}') or {
-			db.rollback()
-			return err
-		}
+		db.exec(schema_v2)!
+		db.exec('PRAGMA user_version = ${latest_schema_version}')!
 		db.commit()!
+		committed = true
 		return
 	}
 	return schema_mismatch_error('index `${s.index_path()}` has schema version ${version}, but this build expects ${latest_schema_version}', s.root)

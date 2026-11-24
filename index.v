@@ -164,29 +164,42 @@ fn (s Store) delete_item(id string) !bool {
 	return db.changes() > 0
 }
 
+// with_transaction runs f inside BEGIN IMMEDIATE and commits only when f
+// succeeds. Any error rolls the transaction back, so a failed batch never
+// leaves the connection holding an open write transaction.
+fn (s Store) with_transaction(f fn () !) ! {
+	mut db := s.db
+	db.begin()!
+	mut committed := false
+	defer {
+		if !committed {
+			db.rollback()
+		}
+	}
+	f()!
+	db.commit()!
+	committed = true
+}
+
 // insert_items_batch inserts many rows with one prepared statement and one
 // commit, which matters for bulk put_many.
 fn (s Store) insert_items_batch(items []IndexItem) ! {
 	if items.len == 0 {
 		return
 	}
-	mut db := s.db
-	mut st := db.prepare('INSERT INTO items (${item_columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')!
-	defer {
-		st.finalize()
-	}
-	db.begin()!
-	for item in items {
-		st.reset()
-		st.clear_bindings()
-		st.bind_text(1, item.id)!
-		bind_item_values(mut st, item, 2)!
-		st.step()!
-	}
-	db.commit() or {
-		db.rollback()
-		return err
-	}
+	s.with_transaction(fn [s, items] () ! {
+		mut st := s.db.prepare('INSERT INTO items (${item_columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')!
+		defer {
+			st.finalize()
+		}
+		for item in items {
+			st.reset()
+			st.clear_bindings()
+			st.bind_text(1, item.id)!
+			bind_item_values(mut st, item, 2)!
+			st.step()!
+		}
+	})!
 }
 
 // set_items_state updates many rows in one transaction.
@@ -194,23 +207,19 @@ fn (s Store) set_items_state(ids []string, state EntryState) ! {
 	if ids.len == 0 {
 		return
 	}
-	mut db := s.db
-	mut st := db.prepare('UPDATE items SET state = ? WHERE id = ?')!
-	defer {
-		st.finalize()
-	}
-	db.begin()!
-	for id in ids {
-		st.reset()
-		st.clear_bindings()
-		st.bind_int(1, i64(int(state)))!
-		st.bind_text(2, id)!
-		st.step()!
-	}
-	db.commit() or {
-		db.rollback()
-		return err
-	}
+	s.with_transaction(fn [s, ids, state] () ! {
+		mut st := s.db.prepare('UPDATE items SET state = ? WHERE id = ?')!
+		defer {
+			st.finalize()
+		}
+		for id in ids {
+			st.reset()
+			st.clear_bindings()
+			st.bind_int(1, i64(int(state)))!
+			st.bind_text(2, id)!
+			st.step()!
+		}
+	})!
 }
 
 // delete_items removes many rows in one transaction. Callers that already
@@ -219,22 +228,18 @@ fn (s Store) delete_items(ids []string) ! {
 	if ids.len == 0 {
 		return
 	}
-	mut db := s.db
-	mut st := db.prepare('DELETE FROM items WHERE id = ?')!
-	defer {
-		st.finalize()
-	}
-	db.begin()!
-	for id in ids {
-		st.reset()
-		st.clear_bindings()
-		st.bind_text(1, id)!
-		st.step()!
-	}
-	db.commit() or {
-		db.rollback()
-		return err
-	}
+	s.with_transaction(fn [s, ids] () ! {
+		mut st := s.db.prepare('DELETE FROM items WHERE id = ?')!
+		defer {
+			st.finalize()
+		}
+		for id in ids {
+			st.reset()
+			st.clear_bindings()
+			st.bind_text(1, id)!
+			st.step()!
+		}
+	})!
 }
 
 fn (s Store) delete_all_items() ! {
