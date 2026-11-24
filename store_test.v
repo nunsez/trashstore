@@ -1399,8 +1399,31 @@ fn test_recover_restore_removes_stale_tmp() {
 	store.update_item(item)!
 	stale := '${file}.trash-tmp-${entry.id}'
 	core_write(stale, 'partial')
+	core_write('${stale}.owner', entry.id)
 	store.recover() or { panic(err) }
 	assert !os.exists(stale)
+	assert !os.exists('${stale}.owner')
+	assert store.entry(entry.id)!.state == .trashed
+}
+
+// regression: P0-1 — recovery never removes a temp path it did not create.
+fn test_recover_restore_keeps_foreign_tmp_without_marker() {
+	root := core_dir('recover_tmp_foreign')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	mut item := store.get_item(entry.id)!
+	item.state = .restoring
+	item.restore_to = percent_encode_path(file)
+	store.update_item(item)!
+	foreign := '${file}.trash-tmp-${entry.id}'
+	core_write(foreign, 'not ours')
+	store.recover() or { panic(err) }
+	assert (os.read_file(foreign) or { '' }) == 'not ours'
 	assert store.entry(entry.id)!.state == .trashed
 }
 
@@ -2060,4 +2083,136 @@ fn test_gc_reports_unremovable_items_and_retries() {
 		store.gc() or { panic(err) }
 		assert !os.exists(garbage)
 	}
+}
+
+// regression: P0-1 — ids read from the index are never turned into paths.
+fn test_scan_and_recovery_reject_unsafe_index_ids() {
+	root := core_dir('unsafe_index_ids')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	// `items/../../victim` resolves to root/victim for id "../../victim".
+	victim := os.join_path(root, 'victim')
+	core_write(os.join_path(victim, 'keep.txt'), 'keep')
+	for id in ['../../victim', 'a/b', '.'] {
+		core_insert(store, id, .pending_empty, os.join_path(root, 'x'))
+	}
+	scan := store.scan()
+	assert scan.entries.len == 0
+	assert scan.broken.len == 3
+	for broken in scan.broken {
+		assert broken.reason == 'invalid item id'
+	}
+	report := store.recover() or { panic(err) }
+	assert report.recovered == 0
+	assert report.warnings.len == 3
+	assert (os.read_file(os.join_path(victim, 'keep.txt')) or { '' }) == 'keep'
+	assert os.is_dir(victim)
+	// The unsafe rows are left for doctor, not deleted.
+	assert store.pending_items()!.len == 3
+}
+
+// regression: P0-1 — a relative restore_to is not trusted by recovery.
+fn test_recovery_rejects_relative_restore_to() {
+	root := core_dir('restore_to_relative')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	id := 'restore-relative'
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'x')
+	sentinel := os.join_path(root, 'victim')
+	core_write(sentinel, 'keep')
+	core_insert(store, id, .restoring, os.join_path(root, 'a.txt'))
+	mut item := store.get_item(id)!
+	item.restore_to = percent_encode_path('../../victim')
+	store.update_item(item)!
+
+	report := store.recover() or { panic(err) }
+	assert report.warnings.len == 1
+	assert report.warnings[0].contains('invalid restore target')
+	assert (os.read_file(sentinel) or { '' }) == 'keep'
+	// The payload is still in the store, so the row is rolled back to trashed.
+	assert store.get_item(id)!.state == .trashed
+	assert store.get_item(id)!.restore_to == ''
+	assert (os.read_file(store.data_path(id)) or { '' }) == 'x'
+}
+
+// regression: P0-1 — an unnormalised restore_to is not trusted by recovery.
+fn test_recovery_rejects_unnormalised_restore_to() {
+	root := core_dir('restore_to_unnormalised')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	id := 'restore-unnormalised'
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'x')
+	os.mkdir_all(os.join_path(root, 'sub')) or { panic(err) }
+	target := os.join_path(root, 'sub', '..', 'victim')
+	// The stale temporary path that an unvalidated remove_any() would delete.
+	stale := '${target}.trash-tmp-${id}'
+	core_write(stale, 'keep')
+	core_insert(store, id, .restoring, target)
+	mut item := store.get_item(id)!
+	item.restore_to = percent_encode_path(target)
+	store.update_item(item)!
+
+	report := store.recover() or { panic(err) }
+	assert report.warnings.len == 1
+	assert (os.read_file(stale) or { '' }) == 'keep'
+	assert store.get_item(id)!.state == .trashed
+}
+
+// regression: P0-1 — public lookups reject unsafe ids before SQL/paths.
+fn test_get_item_rejects_unsafe_id() {
+	root := core_dir('get_unsafe_id')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	for id in ['', '.', '..', '../x', 'x/y', 'x\\y', 'x\x00y'] {
+		mut failed := false
+		store.get_item(id) or { failed = true }
+		assert failed, 'get_item must reject id `${id}`'
+	}
+}
+
+// regression: P0-1 — fill_size never measures a path built from an unsafe id.
+fn test_fill_size_ignores_unsafe_id() {
+	root := core_dir('fill_unsafe_id')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	entry := Entry{
+		id:            '../../etc'
+		original_path: '/etc'
+		kind:          .dir
+		state:         .trashed
+	}
+	got := store.fill_size(entry)
+	assert !got.size_known
+	assert got.size == 0
+}
+
+// regression: P0-1 — doctor reports an unsafe id but never purges it.
+fn test_doctor_does_not_purge_invalid_id() {
+	root := core_dir('doctor_invalid_id')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	victim := os.join_path(root, 'victim')
+	core_write(os.join_path(victim, 'keep.txt'), 'keep')
+	core_insert(store, '../../victim', .trashed, os.join_path(root, 'x'))
+	report := store.doctor(purge: true) or { panic(err) }
+	assert report.purged == 0
+	assert report.broken == 1
+	assert report.items.len == 1
+	assert report.items[0].action == 'skipped: invalid id'
+	assert (os.read_file(os.join_path(victim, 'keep.txt')) or { '' }) == 'keep'
+	assert store.all_items()!.len == 1
 }

@@ -30,6 +30,9 @@ pub mut:
 }
 
 fn data_exists(s Store, id string) bool {
+	if !is_safe_id(id) {
+		return false
+	}
 	// Never follow a symlinked item directory: its payload belongs to someone
 	// else, and treating it as ours would let a crafted store leak files.
 	if os.is_link(s.item_dir(id)) {
@@ -64,6 +67,13 @@ pub fn (s Store) scan() ScanResult {
 	mut result := ScanResult{}
 	mut seen := map[string]bool{}
 	for item in items {
+		if !is_safe_id(item.id) {
+			result.broken << BrokenItem{
+				id:     item.id
+				reason: 'invalid item id'
+			}
+			continue
+		}
 		seen[item.id] = true
 		if item.state != .trashed {
 			result.broken << BrokenItem{

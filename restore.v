@@ -98,12 +98,22 @@ fn (s Store) move_restore_data_cross(entry_id string, dst fsx.Dir, parent string
 	// inode is journaled before the rename so recovery can recognize an already
 	// completed target.
 	tmp_name := '${dst_name}.trash-tmp-${entry_id}'
+	marker_name := '${tmp_name}.owner'
 	tmp := os.join_path(parent, tmp_name)
-	fsx.remove_any(tmp) or {}
+	marker := os.join_path(parent, marker_name)
+	// Record that the temporary copy belongs to this item before creating it.
+	// Recovery only removes a temp path whose marker matches, so a crafted
+	// restore_to cannot make it delete an unrelated file.
+	dst.write_child_new(marker_name, entry_id)!
+	mut copied := false
 	defer {
-		fsx.remove_any(tmp) or {}
+		if copied {
+			dst.remove_child_any(tmp_name, tmp) or {}
+		}
+		dst.remove_child_any(marker_name, marker) or {}
 	}
 	fsx.copy_path_sync(s.data_path(entry_id), tmp)!
+	copied = true
 	st := os.lstat(tmp)!
 	item.target_dev = st.dev
 	item.target_ino = st.inode

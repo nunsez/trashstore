@@ -47,7 +47,7 @@ fn measure_dir(path string) (u64, bool) {
 // result in the index. It is best-effort: an item that disappeared, is being
 // restored or cannot be read keeps its unknown size instead of failing.
 pub fn (s Store) fill_size(entry Entry) Entry {
-	if entry.size_known || entry.kind !in [.file, .dir] {
+	if entry.size_known || entry.kind !in [.file, .dir] || !is_safe_id(entry.id) {
 		return entry
 	}
 	size, ok := measure_path(s.data_path(entry.id), entry.kind)

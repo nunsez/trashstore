@@ -304,6 +304,12 @@ pub fn (s Store) recover() !RecoveryReport {
 fn (s Store) recover_locked() !RecoveryReport {
 	mut report := RecoveryReport{}
 	for item in s.pending_items()! {
+		if !is_safe_id(item.id) {
+			// An id read from the index must never be turned into a path: it could
+			// point outside items/. Leave the row for doctor and keep going.
+			report.warnings << 'item ${item.id}: invalid item id; left untouched'
+			continue
+		}
 		if os.is_link(s.item_dir(item.id)) {
 			report.warnings << 'item ${item.id}: item directory is a symlink; left for doctor'
 			continue
@@ -314,7 +320,10 @@ fn (s Store) recover_locked() !RecoveryReport {
 				report.recovered++
 			}
 			.restoring {
-				s.recover_restore(item)!
+				warning := s.recover_restore(item)!
+				if warning != '' {
+					report.warnings << warning
+				}
 				report.recovered++
 			}
 			.pending_empty {
@@ -356,23 +365,70 @@ fn (s Store) recover_put(item IndexItem) ! {
 	s.remove_item_dir_if_empty(item.id)!
 }
 
-fn (s Store) recover_restore(item IndexItem) ! {
-	if os.is_link(s.item_dir(item.id)) {
-		return
+// is_safe_restore_target reports whether a journaled restore target can be
+// trusted. A tampered index must never make recovery touch a path outside the
+// store, so the target has to be absolute, already normalised and name a real
+// entry rather than the root or a `.`/`..` component.
+fn is_safe_restore_target(target string) bool {
+	if target == '' || target.contains('\x00') || !os.is_abs_path(target) {
+		return false
 	}
+	if os.abs_path(target) != target {
+		return false
+	}
+	return target != '/' && os.file_name(target) !in ['.', '..']
+}
+
+// recover_restore_target inspects a journaled target. It returns true when the
+// item was already fully restored, in which case the row is gone.
+fn (s Store) recover_restore_target(item IndexItem, target string) !(bool, string) {
+	parent_path := os.dir(target)
+	mut parent := fsx.open_dir(parent_path) or {
+		return false, 'item ${item.id}: cannot open restore target parent `${parent_path}` safely: ${err.msg()}'
+	}
+	defer {
+		parent.close()
+	}
+	tmp_name := '${os.file_name(target)}.trash-tmp-${item.id}'
+	marker_name := '${tmp_name}.owner'
+	// Only remove a temp path that carries our marker. Without it the path may
+	// belong to someone else, and restore_to comes from the index.
+	marker := parent.read_child(marker_name, 256) or { '' }
+	if marker == item.id {
+		parent.remove_child_any(tmp_name, os.join_path(parent_path, tmp_name)) or {
+			return false, 'item ${item.id}: cannot remove stale restore temporary file: ${err.msg()}'
+		}
+		parent.remove_child_any(marker_name, os.join_path(parent_path, marker_name)) or {
+			return false, 'item ${item.id}: cannot remove stale restore marker: ${err.msg()}'
+		}
+	}
+	if restore_target_matches(item, target) {
+		// The rename completed before the crash; the target is our payload, so
+		// finish the restore instead of duplicating it.
+		s.delete_item(item.id)!
+		s.remove_item_dir_if_empty(item.id)!
+		return true, ''
+	}
+	return false, ''
+}
+
+fn (s Store) recover_restore(item IndexItem) !string {
+	if os.is_link(s.item_dir(item.id)) {
+		return ''
+	}
+	mut warning := ''
 	if item.restore_to != '' {
 		target := percent_decode_path(item.restore_to) or { '' }
-		if target != '' {
-			fsx.remove_any('${target}.trash-tmp-${item.id}') or {}
-			if os.exists(target) || os.is_link(target) {
-				if restore_target_matches(item, target) {
-					// The rename completed before the crash; the target is our
-					// payload, so finish the restore instead of duplicating it.
-					s.delete_item(item.id)!
-					s.remove_item_dir_if_empty(item.id)!
-					return
-				}
+		if is_safe_restore_target(target) {
+			finished, target_warning := s.recover_restore_target(item, target)!
+			if finished {
+				return target_warning
 			}
+			if target_warning != '' {
+				warning = target_warning
+			}
+		} else {
+			warning = 'item ${item.id}: invalid restore target in index; rolled back to trashed'
 		}
 	}
 	if os.exists(s.data_path(item.id)) || os.is_link(s.data_path(item.id)) {
@@ -386,6 +442,7 @@ fn (s Store) recover_restore(item IndexItem) ! {
 		s.delete_item(item.id)!
 		s.remove_item_dir_if_empty(item.id)!
 	}
+	return warning
 }
 
 fn (s Store) recover_empty(item IndexItem) ! {
@@ -397,10 +454,22 @@ fn (s Store) recover_empty(item IndexItem) ! {
 		if os.is_link(s.gc_dir()) {
 			return invalid_target_error('garbage directory must not be a symlink')
 		}
-		dest := os.join_path(s.gc_dir(), '${item.id}-recovered-${s.next_id()}')
-		fsx.rename_noreplace(dir, dest)!
-		s.sync_dir(s.items_dir())!
-		s.sync_dir(s.gc_dir())!
+		new_id := s.next_id()
+		if !is_safe_id(new_id) {
+			return invalid_target_error('id generator returned an unsafe id `${new_id}`')
+		}
+		mut items := fsx.open_dir(s.items_dir())!
+		defer {
+			items.close()
+		}
+		mut gc := fsx.open_dir(s.gc_dir())!
+		defer {
+			gc.close()
+		}
+		dest_name := '${item.id}-recovered-${new_id}'
+		fsx.renameat_noreplace(items.fd, item.id, gc.fd, dest_name)!
+		items.sync(s.items_dir())!
+		gc.sync(s.gc_dir())!
 	}
 	s.delete_item(item.id)!
 }
@@ -418,19 +487,22 @@ fn (s Store) gc_locked() ! {
 	if os.is_link(s.gc_dir()) {
 		return invalid_target_error('garbage directory `${s.gc_dir()}` must not be a symlink')
 	}
+	if !os.is_dir(s.gc_dir()) {
+		return
+	}
+	mut gc := fsx.open_dir(s.gc_dir())!
+	defer {
+		gc.close()
+	}
 	entries := os.ls(s.gc_dir()) or { []string{} }
 	mut failures := []string{}
 	for entry in entries {
-		path := os.join_path(s.gc_dir(), entry)
-		if !os.exists(path) && !os.is_link(path) {
-			continue
-		}
-		fsx.remove_any(path) or {
+		gc.remove_child_any(entry, os.join_path(s.gc_dir(), entry)) or {
 			failures << '${entry}: ${err.msg()}'
 			continue
 		}
 	}
-	s.sync_dir(s.gc_dir())!
+	gc.sync(s.gc_dir())!
 	if failures.len > 0 {
 		return io_error('could not remove ${failures.len} garbage item(s): ${failures.join('; ')}')
 	}
@@ -514,7 +586,9 @@ pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
 	report.broken = scan.broken.len
 	for broken in scan.broken {
 		mut action := 'reported'
-		if !is_safe_id(broken.id) || os.is_link(s.item_dir(broken.id)) {
+		if !is_safe_id(broken.id) {
+			action = 'skipped: invalid id'
+		} else if os.is_link(s.item_dir(broken.id)) {
 			// A symlinked item directory is evidence of tampering: report it and
 			// leave it for the user instead of following or silently removing it.
 			action = 'skipped: symlinked item'

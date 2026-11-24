@@ -241,8 +241,12 @@ fn (s Store) delete_all_items() ! {
 	s.db.exec('DELETE FROM items')!
 }
 
-// get_item returns one row; a missing id is not_found.
+// get_item returns one row; a missing id is not_found. An unsafe id is
+// rejected before it reaches SQL or any path-building code.
 fn (s Store) get_item(id string) !IndexItem {
+	if !is_safe_id(id) {
+		return invalid_target_error('invalid item id `${id}`')
+	}
 	mut db := s.db
 	mut st := db.prepare('SELECT ${item_columns} FROM items WHERE id = ?')!
 	defer {
