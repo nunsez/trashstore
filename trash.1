@@ -36,8 +36,9 @@ the current directory. Paths match every version of that path.
 .TP
 .B empty
 Permanently delete the selected items. With no arguments, delete items trashed
-from the current directory. Use \fB--all\fR for the whole trash. This cannot be
-undone.
+from the current directory. Use \fB--all\fR for the whole trash. Broken items
+and orphan payloads are only deleted with \fB--include\-broken\fR. This cannot
+be undone.
 .TP
 .B where
 Print the payload path of each selected item inside the trash, one per line.
@@ -158,6 +159,11 @@ With \fBdoctor\fR, permanently remove broken items.
 .TP
 .B \-\-wait
 With \fBempty\fR, wait for permanent deletion instead of deferring GC.
+.TP
+.B \-\-include\-broken
+With \fBempty \-\-all\fR, also permanently delete broken items and orphan
+payloads (item directories without an index row). Without this flag such
+payloads are reported but never deleted, matching \fBdoctor\fR's default.
 .TP
 .B \-\-verbose
 Explain what is happening.

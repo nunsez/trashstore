@@ -101,10 +101,13 @@ fn command_help(c Command) string {
 			'Usage: trash empty [OPTIONS] [<id|prefix|path>...]\n\n' +
 				'Permanently deletes the selected items. With no arguments, deletes\n' +
 				'items trashed from the current directory; use --all for the whole\n' +
-				'trash. This cannot be undone.\n\n' +
+				'trash. Broken items and orphan payloads (directories without an index\n' +
+				'row) are never deleted unless --include-broken is given. This cannot\n' +
+				'be undone.\n\n' +
 				'Options:\n' +
 				'  -r, --recursive   Include the current directory subtree\n' +
 				'  --all             Use the whole trash\n' +
+				'  --include-broken  With --all, also delete broken and orphan payloads\n' +
 				'  --keep N          Never delete the N newest items\n' +
 				'  --limit N         Delete at most N items\n' +
 				'  --sort MODE       date, size, path or kind\n' +

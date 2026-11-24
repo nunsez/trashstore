@@ -73,6 +73,7 @@ pub mut:
 	keep               int
 	keep_set           bool
 	no_size            bool
+	include_broken     bool
 	doctor_purge       bool
 	doctor_repair      bool
 	doctor_integrity   bool
@@ -311,6 +312,7 @@ pub fn Cli.parse(args []string) !Cli {
 			'--ids' { cli.ids = true }
 			'--wait' { cli.wait = true }
 			'--no-size' { cli.no_size = true }
+			'--include-broken' { cli.include_broken = true }
 			'--repair' { cli.doctor_repair = true }
 			'--doctor-purge' { cli.doctor_purge = true }
 			'--integrity-check' { cli.doctor_integrity = true }
@@ -389,6 +391,12 @@ fn (cli Cli) validate() ! {
 	}
 	if cli.wait && cli.command != .empty {
 		return error('--wait is only supported by `empty`')
+	}
+	if cli.include_broken && cli.command != .empty {
+		return error('--include-broken is only supported by `empty`')
+	}
+	if cli.include_broken && !cli.all {
+		return error('--include-broken requires --all')
 	}
 	if cli.keep_set && cli.command != .empty {
 		return error('--keep is only supported by `empty`')

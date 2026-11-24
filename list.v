@@ -243,15 +243,6 @@ pub fn (s Store) find(ref string) ![]Entry {
 	return find_in(s.scan().entries, ref)
 }
 
-// latest returns the newest trashed item.
-pub fn (s Store) latest() !Entry {
-	entries := s.scan().entries
-	if entries.len == 0 {
-		return not_found_error('trash is empty')
-	}
-	return entries[0]
-}
-
 pub struct StoreStats {
 pub:
 	items   int

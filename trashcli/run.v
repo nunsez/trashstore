@@ -270,11 +270,11 @@ fn run_empty(store Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
 	cwd := canonical_path(os.getwd())
-	if empty_whole_trash(cli) && !cli.dry_run {
-		return run_empty_whole(store, cli, cwd)
-	}
 	mut selected := select_entries(store, scan.entries, cli, cwd)!
-	if selected.len == 0 {
+	// Broken items (orphan payloads, rows without a payload) are never deleted
+	// unless --include-broken explicitly asks for it.
+	broken_targets := if cli.include_broken { scan.broken.len } else { 0 }
+	if selected.len == 0 && broken_targets == 0 {
 		if cli.json {
 			if cli.dry_run {
 				println(json2.encode(EmptyPlan{
@@ -296,7 +296,7 @@ fn run_empty(store Store, cli Cli) ! {
 		}
 		return
 	}
-	if cli.interactive {
+	if cli.interactive && selected.len > 0 {
 		selected = prompt_selection(selected)!
 		if selected.len == 0 {
 			return
@@ -313,16 +313,29 @@ fn run_empty(store Store, cli Cli) ! {
 			for entry in selected {
 				println('Would permanently delete ${entry.original_path}')
 			}
-			println('Would permanently delete ${selected.len} item(s)${selection_scope(cli, cwd)}.')
+			if broken_targets > 0 {
+				println('Would permanently delete ${broken_targets} broken item(s).')
+			}
+			total := selected.len + broken_targets
+			println('Would permanently delete ${total} item(s)${selection_scope(cli, cwd)}.')
 		}
 		return
 	}
-	if !confirm_action(selected.len, 'Permanently delete', selection_scope(cli, cwd), cli, true)! {
+	total := selected.len + broken_targets
+	if !confirm_action(total, 'Permanently delete', selection_scope(cli, cwd), cli, true)! {
 		println('Aborted.')
 		return
 	}
 	batch := store.empty_batch(selected)!
-	if batch.emptied > 0 && cli.wait {
+	if cli.include_broken {
+		// doctor --purge detaches broken item directories into .gc and cleans up.
+		report := store.doctor(purge: true)!
+		for item in report.items {
+			if item.action != 'purged' {
+				eprintln(cli.palette().red('warning:') + ' could not remove broken item ${format.short_id(item.id)}: ${item.reason} (${item.action})')
+			}
+		}
+	} else if batch.emptied > 0 && cli.wait {
 		store.gc()!
 	}
 	if cli.json {
@@ -338,36 +351,6 @@ fn run_empty(store Store, cli Cli) ! {
 			eprintln(cli.palette().red('error:') + ' ${failure.subject}: ${failure.message}')
 		}
 		return error('${batch.failures.len} item(s) could not be deleted')
-	}
-}
-
-// empty_whole_trash reports whether the selection covers the entire trash,
-// so the concurrency-safe whole-store empty path can be used.
-fn empty_whole_trash(cli Cli) bool {
-	return cli.all && cli.targets.len == 0 && !cli.recursive && !cli.interactive
-		&& cli.kind == '' && cli.grep == '' && cli.older_than_seconds == 0 && cli.keep == 0
-		&& cli.limit == 0
-}
-
-fn run_empty_whole(store Store, cli Cli, cwd string) ! {
-	count := store.count_items()
-	if count == 0 {
-		if cli.json {
-			println(json2.encode(EmptyReport{ emptied: 0, dry_run: false }, escape_unicode: true))
-		} else {
-			println('Trash is already empty.')
-		}
-		return
-	}
-	if !confirm_action(count, 'Permanently delete', selection_scope(cli, cwd), cli, true)! {
-		println('Aborted.')
-		return
-	}
-	n := store.empty_wait(cli.wait)!
-	if cli.json {
-		println(json2.encode(EmptyReport{ emptied: n, dry_run: false }, escape_unicode: true))
-	} else {
-		println('Emptied ${n} item(s) from ${store.root}.')
 	}
 }
 

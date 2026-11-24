@@ -50,7 +50,7 @@ _trash() {
                     ;;
                 empty)
                     _arguments '(-r --recursive)'{-r,--recursive}'[include subtree]' \
-                        '--all[use whole trash]' '--keep[keep newest N]:number:' '--limit[delete at most N]:number:' \
+                        '--all[use whole trash]' '--include-broken[also delete broken items]' '--keep[keep newest N]:number:' '--limit[delete at most N]:number:' \
                         '--sort[sort mode]:mode:(date size path kind)' \
                         '--kind[filter kind]:kind:(file dir symlink other)' \
                         '--grep[filter path]:pattern:' '--older-than[minimum age]:age:' \

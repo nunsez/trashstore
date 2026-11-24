@@ -18,7 +18,7 @@ _trash() {
             COMPREPLY=( $(compgen -W "--recursive --all --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes $global_opts" -- "$cur") )
             ;;
         empty)
-            COMPREPLY=( $(compgen -W "--recursive --all --keep --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes --wait $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --all --keep --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes --wait --include-broken $global_opts" -- "$cur") )
             ;;
         where)
             COMPREPLY=( $(compgen -W "--recursive --kind --grep --older-than --json $global_opts" -- "$cur") )

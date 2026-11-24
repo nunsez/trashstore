@@ -80,6 +80,9 @@ trash empty --all --keep 10 --yes
 trash empty --all --yes
 trash empty --all --yes --wait
 
+# Also remove broken items and orphan payloads (explicit consent)
+trash empty --all --include-broken --yes
+
 # Diagnostics and scripting
 trash stats
 trash where 8bd42d97
@@ -226,11 +229,13 @@ roll back an interrupted operation. If another process already holds the
 exclusive recovery lock, the call returns an empty report and the lock holder
 (or the next run) finishes the work. Broken items are reported by
 `list`/`restore` and skipped; an orphaned payload (a directory without a row) is
-never deleted automatically.
+never deleted automatically. `empty --all` only deletes valid items; pass
+`--include-broken` to also remove broken items and orphan payloads (the same
+work `doctor --doctor-purge` does).
 
-`put` and `restore` take a shared store lock; `empty --all` takes the exclusive
-lock, so a whole-store wipe waits for in-flight operations instead of racing
-them. GC continues past an item it cannot remove and reports the remainder, so
+`put` and `restore` take a shared store lock; `empty` takes the exclusive lock,
+so a wipe waits for in-flight operations instead of racing them, and concurrent
+`empty --all` runs are idempotent. GC continues past an item it cannot remove and reports the remainder, so
 one unreadable entry does not block the rest.
 
 ## Design notes

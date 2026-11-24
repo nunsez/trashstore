@@ -83,6 +83,7 @@ mut:
 fn resolve_refs(entries []Entry, refs []string, recursive bool, tolerant bool) !RefResolution {
 	mut selected := []Entry{}
 	mut seen := map[string]bool{}
+	mut warnings := []string{}
 	mut failed := 0
 	for ref in refs {
 		candidate := canonical_target_path(ref)
@@ -104,7 +105,7 @@ fn resolve_refs(entries []Entry, refs []string, recursive bool, tolerant bool) !
 				_ := find_in(entries, ref)!
 			}
 			if failure != '' {
-				eprintln('warning: ${failure} (skipped)')
+				warnings << '${failure} (skipped)'
 				failed++
 			}
 			continue
@@ -118,8 +119,9 @@ fn resolve_refs(entries []Entry, refs []string, recursive bool, tolerant bool) !
 		}
 	}
 	return RefResolution{
-		entries: selected
-		failed:  failed
+		entries:  selected
+		warnings: warnings
+		failed:   failed
 	}
 }
 

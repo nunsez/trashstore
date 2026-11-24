@@ -43,6 +43,7 @@ complete -c trash -n "__fish_seen_subcommand_from empty" -l older-than -r -d 'Mi
 complete -c trash -n "__fish_seen_subcommand_from empty" -s i -l interactive -d 'Choose items'
 complete -c trash -n "__fish_seen_subcommand_from empty" -l dry-run -d 'Show plan'
 complete -c trash -n "__fish_seen_subcommand_from empty" -l wait -d 'Wait for GC'
+complete -c trash -n "__fish_seen_subcommand_from empty" -l include-broken -d 'Also delete broken items'
 complete -c trash -n "__fish_seen_subcommand_from empty" -l json -d 'JSON output'
 complete -c trash -n "__fish_seen_subcommand_from empty" -s y -l yes -d 'Skip confirmation'
 

@@ -284,6 +284,30 @@ fn test_run_empty_requires_yes_when_not_interactive() {
 	assert store.list().len == 0
 }
 
+fn test_run_empty_all_leaves_broken_unless_include_broken() {
+	root := cli_dir('run_empty_broken')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'x')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	store := open(store_path) or { panic(err) }
+	orphan := '00000000-0000-7000-8000-000000000000'
+	os.mkdir_all(store.item_dir(orphan)) or { panic(err) }
+	cli_write(store.data_path(orphan), 'orphan')
+
+	cli_run(['trash', '--store', store_path, 'empty', '--all', '--yes']) or { panic(err) }
+	assert store.list().len == 0
+	assert os.exists(store.data_path(orphan))
+
+	cli_run(['trash', '--store', store_path, 'empty', '--all', '--include-broken', '--yes']) or {
+		panic(err)
+	}
+	assert !os.exists(store.item_dir(orphan))
+}
+
 fn test_run_restore_default_scope() {
 	root := cli_dir('run_default_scope')
 	defer {
@@ -905,6 +929,18 @@ fn test_run_restore_sort_size_measures_before_sorting() {
 	}
 	assert os.exists(big)
 	assert !os.exists(small)
+}
+
+fn test_parse_include_broken() {
+	cli := Cli.parse(['trash', 'empty', '--all', '--include-broken', '--yes']) or { panic(err) }
+	assert cli.command == .empty
+	assert cli.include_broken
+	mut failed := false
+	Cli.parse(['trash', 'empty', '--include-broken', '--yes']) or { failed = true }
+	assert failed
+	failed = false
+	Cli.parse(['trash', 'list', '--all', '--include-broken']) or { failed = true }
+	assert failed
 }
 
 fn test_parse_doctor_maintenance_flags() {

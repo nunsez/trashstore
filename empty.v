@@ -2,7 +2,6 @@ module trash
 
 import internal.fsx
 import os
-import rand
 
 pub struct EmptyBatch {
 pub mut:
@@ -22,16 +21,33 @@ pub fn (s Store) empty_entries(entries []Entry) !int {
 	return batch.emptied
 }
 
-// empty_batch moves entries into .gc under one shared lock and reports
+// empty_batch moves entries into .gc under one exclusive lock and reports
 // per-item failures without losing successful results. Call gc() afterwards.
+// Entries that another process already removed are skipped, so concurrent
+// `empty --all` runs are idempotent.
 pub fn (s Store) empty_batch(entries []Entry) !EmptyBatch {
-	mut fl := s.lock_shared()!
+	mut fl := s.lock_exclusive()!
 	defer {
 		fl.release()
 	}
 	mut batch := EmptyBatch{}
 	mut emptied_ids := []string{}
 	for entry in entries {
+		if !is_safe_id(entry.id) {
+			batch.failures << batch_failure(entry.id, 'empty', invalid_target_error('invalid item id `${entry.id}`'))
+			continue
+		}
+		item := s.get_item(entry.id) or {
+			if err is TrashError && err.kind == .not_found {
+				continue
+			}
+			batch.failures << batch_failure(entry.id, 'empty', err)
+			continue
+		}
+		if item.state != .trashed {
+			// Recovery or another process owns this row now.
+			continue
+		}
 		s.empty_one_locked(entry) or {
 			batch.failures << batch_failure(entry.id, 'empty', err)
 			continue
@@ -67,47 +83,9 @@ fn (s Store) empty_one_locked(entry Entry) ! {
 	failpoint('empty:after-rename')!
 }
 
-// empty atomically detaches the whole items tree and recreates an empty one.
-// By default .gc is cleaned later; use empty_wait(true) to wait for deletion.
+// empty permanently deletes every trashed item and then cleans .gc.
+// Orphan payloads (directories without an index row) are never deleted
+// automatically; use doctor --purge or `empty --all --include-broken` for that.
 pub fn (s Store) empty() !int {
-	return s.empty_wait(false)
-}
-
-// empty_wait detaches items and optionally waits for .gc cleanup.
-pub fn (s Store) empty_wait(wait bool) !int {
-	for dir in [s.items_dir(), s.gc_dir()] {
-		if os.is_link(dir) {
-			return invalid_target_error('store directory `${dir}` must not be a symlink')
-		}
-	}
-	mut fl := s.lock_exclusive()!
-	defer {
-		fl.release()
-	}
-	s.recover_locked()!
-	count := s.item_count()!
-	s.db.exec('UPDATE items SET state = ${int(EntryState.pending_empty)}')!
-	suffix := rand.uuid_v7()
-	items_gc := os.join_path(s.gc_dir(), 'empty-${suffix}-items')
-	fsx.rename_noreplace(s.items_dir(), items_gc)!
-	if os.is_dir(s.inflight_dir()) && !os.is_link(s.inflight_dir()) {
-		inflight_gc := os.join_path(s.gc_dir(), 'empty-${suffix}-inflight')
-		fsx.rename_noreplace(s.inflight_dir(), inflight_gc)!
-	}
-	s.sync_dir(s.gc_dir())!
-	failpoint('empty:after-detach')!
-	for dir in [s.items_dir()] {
-		os.mkdir(dir, mode: int(s.mode)) or {
-			if !os.is_dir(dir) {
-				return err
-			}
-		}
-	}
-	s.sync_dir(s.root)!
-	s.delete_all_items()!
-	fl.release()
-	if wait {
-		s.gc()!
-	}
-	return int(count)
+	return s.empty_entries(s.scan().entries)
 }

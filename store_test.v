@@ -675,7 +675,7 @@ fn test_empty_removes_everything() {
 		core_write(file, name)
 		core_put(store, file, false)
 	}
-	count := store.empty_wait(true) or { panic(err) }
+	count := store.empty() or { panic(err) }
 	assert count == 2
 	assert (os.ls(store.items_dir()) or { []string{} }).len == 0
 	assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
@@ -724,30 +724,6 @@ fn test_failpoint_empty_after_rename_is_recovered() {
 	os.unsetenv('TRASH_FAILPOINT')
 	store.recover_if_needed() or { panic(err) }
 	assert store.list().len == 0
-}
-
-fn test_failpoint_empty_after_detach_is_recovered() {
-	root := core_dir('failpoint_empty')
-	defer {
-		core_cleanup(root)
-	}
-	store := open(os.join_path(root, 'trash')) or { panic(err) }
-	file := os.join_path(root, 'a.txt')
-	core_write(file, 'x')
-	core_put(store, file, false)
-	os.setenv('TRASH_TEST_FAILPOINTS', '1', true)
-	os.setenv('TRASH_FAILPOINT', 'empty:after-detach', true)
-	defer {
-		os.unsetenv('TRASH_FAILPOINT')
-		os.unsetenv('TRASH_TEST_FAILPOINTS')
-	}
-	mut failed := false
-	store.empty() or { failed = true }
-	assert failed
-	os.unsetenv('TRASH_FAILPOINT')
-	store2 := open(store.root) or { panic(err) }
-	store2.recover_if_needed() or { panic(err) }
-	assert store2.list().len == 0
 }
 
 fn test_failpoint_put_after_move_is_recovered() {
@@ -1474,8 +1450,8 @@ fn test_filter_entries_by_kind_grep_and_age() {
 	assert sorted[0].original_path < sorted[1].original_path
 }
 
-fn test_empty_defers_gc_until_requested() {
-	root := core_dir('empty_defer')
+fn test_empty_cleans_gc() {
+	root := core_dir('empty_gc')
 	defer {
 		core_cleanup(root)
 	}
@@ -1485,8 +1461,6 @@ fn test_empty_defers_gc_until_requested() {
 	core_put(store, file, false)
 	assert (store.empty() or { panic(err) }) == 1
 	assert (os.ls(store.items_dir()) or { []string{} }).len == 0
-	assert (os.ls(store.gc_dir()) or { []string{} }).len > 0
-	store.gc() or { panic(err) }
 	assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
 }
 
@@ -1757,29 +1731,6 @@ fn test_failpoint_empty_recovers_by_finishing() {
 	assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
 }
 
-fn test_failpoint_empty_all_recovers() {
-	root := core_dir('fail_empty_all')
-	defer {
-		core_cleanup(root)
-	}
-	store := open(os.join_path(root, 'trash')) or { panic(err) }
-	for name in ['a.txt', 'b.txt'] {
-		file := os.join_path(root, name)
-		core_write(file, 'x')
-		core_put(store, file, false)
-	}
-	mut failed := false
-	with_failpoint('empty:after-detach', fn [store] () ! {
-		store.empty()!
-	}) or { failed = true }
-	assert failed
-	// Reopening recreates items/; recovery must drop the detached generation.
-	reopened := open(os.join_path(root, 'trash')) or { panic(err) }
-	reopened.recover_if_needed() or { panic(err) }
-	assert reopened.count_items() == 0
-	assert (os.ls(reopened.gc_dir()) or { []string{} }).len == 0
-}
-
 fn test_parallel_open_of_fresh_store() {
 	root := core_dir('parallel_open')
 	defer {
@@ -2035,22 +1986,25 @@ fn test_reopen_preserves_existing_dir_mode() {
 	}
 }
 
-fn test_empty_all_recreates_items_with_store_mode() {
-	$if !windows {
-		root := core_dir('empty_mode')
-		defer {
-			core_cleanup(root)
-		}
-		store_path := os.join_path(root, 'trash')
-		store := open(store_path) or { panic(err) }
-		file := os.join_path(root, 'a.txt')
-		core_write(file, 'x')
-		core_put(store, file, false)
-		os.chmod(store.root, 0o750) or { panic(err) }
-		reopened := open(store_path) or { panic(err) }
-		reopened.empty_wait(false) or { panic(err) }
-		assert (os.stat(reopened.items_dir()) or { panic(err) }).mode & 0o777 == 0o750
+fn test_empty_leaves_orphan_payload_for_doctor() {
+	root := core_dir('empty_orphan')
+	defer {
+		core_cleanup(root)
 	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	core_put(store, file, false)
+	orphan := '00000000-0000-7000-8000-000000000000'
+	os.mkdir_all(store.item_dir(orphan)) or { panic(err) }
+	core_write(store.data_path(orphan), 'orphan')
+	assert store.scan().broken.len == 1
+	count := store.empty() or { panic(err) }
+	assert count == 1
+	assert os.exists(store.data_path(orphan))
+	report := store.doctor(purge: true) or { panic(err) }
+	assert report.purged == 1
+	assert !os.exists(store.item_dir(orphan))
 }
 
 fn test_gc_reports_unremovable_items_and_retries() {
