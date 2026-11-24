@@ -3,7 +3,7 @@ module trash
 import os
 import time
 
-fn index_test_store(name string) (string, Store) {
+fn index_test_store(name string) (string, &Store) {
 	root := canonical_path(os.join_path(os.temp_dir(), 'v_trash_index_${os.getpid()}_${name}'))
 	os.rmdir_all(root) or {}
 	os.mkdir_all(root) or { panic(err) }
@@ -121,7 +121,7 @@ fn test_index_transaction_rollback() {
 	defer {
 		os.rmdir_all(root) or {}
 	}
-	mut db := store.db
+	mut db := store.conn()!
 	db.begin()!
 	store.insert_item(IndexItem{
 		id:            'tx'
@@ -159,7 +159,7 @@ fn test_index_batch_rolls_back_on_error() {
 	// The failed batch must have rolled back, not left an open transaction:
 	// a fresh BEGIN IMMEDIATE would otherwise fail with
 	// "cannot start a transaction within a transaction".
-	mut db := store.db
+	mut db := store.conn()!
 	db.begin()!
 	db.rollback()
 	// The connection is usable afterwards.
@@ -172,7 +172,7 @@ fn test_index_table_is_strict() {
 	defer {
 		os.rmdir_all(root) or {}
 	}
-	mut db := store.db
+	mut db := store.conn()!
 	rows := db.query("SELECT strict FROM pragma_table_list WHERE name = 'items'")!
 	assert rows.len == 1
 	assert rows[0].vals[0] == '1'

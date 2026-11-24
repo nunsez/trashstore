@@ -627,7 +627,7 @@ fn print_doctor_report(report trash.DoctorReport, cli Cli) {
 	}
 }
 
-fn open_store_or_reset(path string, cli Cli) !trash.Store {
+fn open_store_or_reset(path string, cli Cli) !&trash.Store {
 	return trash.open_with(path) or {
 		if err is trash.TrashError && err.kind == .schema_mismatch {
 			if cli.reset_store {

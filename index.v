@@ -107,7 +107,7 @@ fn bind_item_values(mut st sqlite.Stmt, item IndexItem, first int) ! {
 
 // insert_item adds a row. The caller commits the surrounding transaction.
 fn (s Store) insert_item(item IndexItem) ! {
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('INSERT INTO items (${item_columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')!
 	defer {
 		st.finalize()
@@ -119,7 +119,7 @@ fn (s Store) insert_item(item IndexItem) ! {
 
 // update_item rewrites every mutable column of an existing row.
 fn (s Store) update_item(item IndexItem) !bool {
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('UPDATE items SET original_path = ?, trashed_at = ?, kind = ?, size = ?, size_known = ?, state = ?, restore_to = ?, data_dev = ?, data_ino = ?, target_dev = ?, target_ino = ? WHERE id = ?')!
 	defer {
 		st.finalize()
@@ -131,7 +131,7 @@ fn (s Store) update_item(item IndexItem) !bool {
 }
 
 fn (s Store) set_item_state(id string, state EntryState) !bool {
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('UPDATE items SET state = ? WHERE id = ?')!
 	defer {
 		st.finalize()
@@ -143,7 +143,7 @@ fn (s Store) set_item_state(id string, state EntryState) !bool {
 }
 
 fn (s Store) set_item_size(id string, size u64) !bool {
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('UPDATE items SET size = ?, size_known = 1 WHERE id = ? AND size_known = 0')!
 	defer {
 		st.finalize()
@@ -156,7 +156,7 @@ fn (s Store) set_item_size(id string, size u64) !bool {
 
 fn (s Store) delete_item(id string) !bool {
 	failpoint('index:delete-item')!
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('DELETE FROM items WHERE id = ?')!
 	defer {
 		st.finalize()
@@ -170,7 +170,7 @@ fn (s Store) delete_item(id string) !bool {
 // succeeds. Any error rolls the transaction back, so a failed batch never
 // leaves the connection holding an open write transaction.
 fn (s Store) with_transaction(f fn () !) ! {
-	mut db := s.db
+	mut db := s.conn()!
 	db.begin()!
 	mut committed := false
 	defer {
@@ -190,7 +190,8 @@ fn (s Store) insert_items_batch(items []IndexItem) ! {
 		return
 	}
 	s.with_transaction(fn [s, items] () ! {
-		mut st := s.db.prepare('INSERT INTO items (${item_columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')!
+		mut db := s.conn()!
+		mut st := db.prepare('INSERT INTO items (${item_columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')!
 		defer {
 			st.finalize()
 		}
@@ -210,7 +211,8 @@ fn (s Store) set_items_state(ids []string, state EntryState) ! {
 		return
 	}
 	s.with_transaction(fn [s, ids, state] () ! {
-		mut st := s.db.prepare('UPDATE items SET state = ? WHERE id = ?')!
+		mut db := s.conn()!
+		mut st := db.prepare('UPDATE items SET state = ? WHERE id = ?')!
 		defer {
 			st.finalize()
 		}
@@ -231,7 +233,8 @@ fn (s Store) delete_items(ids []string) ! {
 		return
 	}
 	s.with_transaction(fn [s, ids] () ! {
-		mut st := s.db.prepare('DELETE FROM items WHERE id = ?')!
+		mut db := s.conn()!
+		mut st := db.prepare('DELETE FROM items WHERE id = ?')!
 		defer {
 			st.finalize()
 		}
@@ -245,7 +248,8 @@ fn (s Store) delete_items(ids []string) ! {
 }
 
 fn (s Store) delete_all_items() ! {
-	s.db.exec('DELETE FROM items')!
+	db := s.conn()!
+	db.exec('DELETE FROM items')!
 }
 
 // get_item returns one row; a missing id is not_found. An unsafe id is
@@ -254,7 +258,7 @@ fn (s Store) get_item(id string) !IndexItem {
 	if !is_safe_id(id) {
 		return invalid_target_error('invalid item id `${id}`')
 	}
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('SELECT ${item_columns} FROM items WHERE id = ?')!
 	defer {
 		st.finalize()
@@ -272,7 +276,7 @@ pub fn (s Store) entry(id string) !Entry {
 }
 
 fn (s Store) all_items() ![]IndexItem {
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('SELECT ${item_columns} FROM items')!
 	defer {
 		st.finalize()
@@ -288,7 +292,7 @@ fn (s Store) all_items() ![]IndexItem {
 }
 
 fn (s Store) trashed_items() ![]IndexItem {
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('SELECT ${item_columns} FROM items WHERE state = ? ORDER BY id DESC')!
 	defer {
 		st.finalize()
@@ -305,7 +309,7 @@ fn (s Store) trashed_items() ![]IndexItem {
 }
 
 fn (s Store) pending_items() ![]IndexItem {
-	mut db := s.db
+	mut db := s.conn()!
 	mut st := db.prepare('SELECT ${item_columns} FROM items WHERE state != ? ORDER BY id')!
 	defer {
 		st.finalize()
@@ -322,7 +326,7 @@ fn (s Store) pending_items() ![]IndexItem {
 }
 
 fn (s Store) item_count() !i64 {
-	mut db := s.db
+	mut db := s.conn()!
 	rows := db.query('SELECT COUNT(*) FROM items')!
 	if rows.len == 0 {
 		return 0

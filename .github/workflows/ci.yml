@@ -65,14 +65,14 @@ jobs:
         run: |
           set -euo pipefail
           tag_version="${GITHUB_REF_NAME#v}"
-          app_version="$(sed -n "s/^pub const app_version = '\(.*\)'$/\1/p" version.v)"
+          app_version="$(sed -n "s/^pub const app_version = '\(.*\)'$/\1/p" constants.v)"
           mod_version="$(sed -n "s/^[[:space:]]*version:[[:space:]]*'\(.*\)'$/\1/p" v.mod)"
           if [ -z "$app_version" ] || [ -z "$mod_version" ]; then
-            echo "::error::could not read app_version from version.v or v.mod"
+            echo "::error::could not read app_version from constants.v or v.mod"
             exit 1
           fi
           if [ "$tag_version" != "$app_version" ] || [ "$tag_version" != "$mod_version" ]; then
-            echo "::error::tag v${tag_version} does not match version.v (${app_version}) and v.mod (${mod_version})"
+            echo "::error::tag v${tag_version} does not match constants.v (${app_version}) and v.mod (${mod_version})"
             exit 1
           fi
       - name: Build and package

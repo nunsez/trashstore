@@ -59,7 +59,7 @@ fn (s Store) rebuild_index_locked() !int {
 // integrity_check_locked runs SQLite's integrity check and returns "ok" or the
 // concatenated problems.
 fn (s Store) integrity_check_locked() !string {
-	mut db := s.db
+	mut db := s.conn()!
 	rows := db.query('PRAGMA integrity_check')!
 	mut messages := []string{}
 	for row in rows {
@@ -75,14 +75,16 @@ fn (s Store) integrity_check_locked() !string {
 
 // compact_locked rebuilds the database file and returns free pages to the OS.
 fn (s Store) compact_locked() ! {
-	s.db.exec('VACUUM')!
+	db := s.conn()!
+	db.exec('VACUUM')!
 	// auto_vacuum=INCREMENTAL is set when the index is created; this releases
 	// the pages that VACUUM left on the free list.
-	s.db.exec('PRAGMA incremental_vacuum')!
+	db.exec('PRAGMA incremental_vacuum')!
 }
 
 fn (s Store) reindex_locked() ! {
-	s.db.exec('REINDEX')!
+	db := s.conn()!
+	db.exec('REINDEX')!
 }
 
 // backup_locked writes a consistent snapshot of the index next to it.
@@ -100,7 +102,8 @@ fn (s Store) backup_locked() !string {
 	}
 	// Build the snapshot next to the old one and swap it in, so a failed
 	// VACUUM does not destroy the previous backup.
-	s.db.exec('VACUUM INTO ${sql_quote(tmp)}')!
+	db := s.conn()!
+	db.exec('VACUUM INTO ${sql_quote(tmp)}')!
 	os.chmod(tmp, 0o600)!
 	os.mv(tmp, path)!
 	os.chmod(path, 0o600)!

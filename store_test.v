@@ -23,11 +23,11 @@ fn core_write(path string, content string) {
 	os.write_file(path, content) or { panic(err) }
 }
 
-fn core_put(store Store, path string, recursive bool) Entry {
+fn core_put(store &Store, path string, recursive bool) Entry {
 	return store.put(path, recursive: recursive) or { panic(err) }
 }
 
-fn core_insert(store Store, id string, state EntryState, original string) {
+fn core_insert(store &Store, id string, state EntryState, original string) {
 	store.insert_item(IndexItem{
 		id:            id
 		original_path: original
@@ -37,7 +37,7 @@ fn core_insert(store Store, id string, state EntryState, original string) {
 	}) or { panic(err) }
 }
 
-fn core_insert_kind(store Store, id string, state EntryState, original string, kind EntryKind) {
+fn core_insert_kind(store &Store, id string, state EntryState, original string, kind EntryKind) {
 	store.insert_item(IndexItem{
 		id:            id
 		original_path: original
@@ -207,6 +207,87 @@ fn test_open_creates_layout() {
 	assert os.exists(store.lock_path())
 }
 
+// A closed store must reject every operation with an error instead of touching
+// the freed SQLite handle. close() is idempotent.
+fn test_closed_store_returns_errors_and_double_close_is_safe() {
+	root := core_dir('closed')
+	defer {
+		core_cleanup(root)
+	}
+	mut store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	pending := os.join_path(root, 'b.txt')
+	core_write(pending, 'y')
+
+	store.close()
+	store.close()
+
+	mut failed := false
+	store.entry(entry.id) or {
+		failed = true
+		assert err.msg().contains('is closed')
+	}
+	assert failed, 'entry on a closed store must fail'
+	failed = false
+	store.put(pending) or {
+		failed = true
+		assert err.msg().contains('is closed')
+	}
+	assert failed, 'put on a closed store must fail'
+}
+
+// A value copy shares the connection state. Closing it must not double-free the
+// handle, and the original must report a clean "closed" error afterwards.
+fn test_store_value_copy_close_does_not_double_free() {
+	root := core_dir('copy_close')
+	defer {
+		core_cleanup(root)
+	}
+	mut store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+
+	mut copy := *store
+	copy.close()
+	copy.close()
+
+	mut failed := false
+	store.entry(entry.id) or {
+		failed = true
+		assert err.msg().contains('is closed')
+	}
+	assert failed, 'the original must observe the shared connection as closed'
+	store.close()
+}
+
+// Copies share one FULLMUTEX connection, so concurrent read-only calls from
+// several threads must not race or crash.
+fn test_store_shared_connection_concurrent_reads() {
+	root := core_dir('shared_reads')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+
+	mut tasks := []fn (){}
+	for _ in 0 .. 8 {
+		tasks << fn [store, entry] () {
+			for _ in 0 .. 50 {
+				got := store.entry(entry.id) or { panic(err) }
+				assert got.id == entry.id
+			}
+		}
+	}
+	run_parallel(tasks)
+	assert store.count_items() == 1
+}
+
 // regression: S3 — a store writable by the group allows symlink planting.
 fn test_open_rejects_group_or_world_writable_store() {
 	root := core_dir('perm')
@@ -335,7 +416,7 @@ fn test_index_rejects_unknown_schema_version() {
 	}
 	trash := os.join_path(root, 'trash')
 	store := open(trash) or { panic(err) }
-	mut db := store.db
+	mut db := store.conn()!
 	db.exec('PRAGMA user_version = 99')!
 	db.close()
 	mut failed := false
@@ -362,7 +443,7 @@ fn test_reset_store_removes_only_store_entries() {
 	os.write_file(os.join_path(item_dir, 'data'), 'payload') or { panic(err) }
 	keep := os.join_path(trash_path, 'keep.txt')
 	os.write_file(keep, 'keep') or { panic(err) }
-	mut db := store.db
+	mut db := store.conn()!
 	db.exec('PRAGMA user_version = 99')!
 	db.close()
 	reset_store(trash_path)!
@@ -2209,7 +2290,7 @@ fn test_unknown_index_state_is_broken_not_pending_empty() {
 	os.mkdir_all(store.item_dir(id)) or { panic(err) }
 	core_write(store.data_path(id), 'keep')
 	core_insert(store, id, .trashed, os.join_path(root, 'a.txt'))
-	mut db := store.db
+	mut db := store.conn()!
 	// The schema CHECK constraint rejects state=99, so simulate a corrupt or
 	// future index row by bypassing it for this update.
 	db.exec('PRAGMA ignore_check_constraints = ON')!

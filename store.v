@@ -4,6 +4,7 @@ import internal.fsx
 import internal.sqlite
 import os
 import rand
+import sync
 import time
 
 const items_dirname = 'items'
@@ -34,17 +35,42 @@ pub mut:
 	warnings  []string
 }
 
+// StoreDb is the heap-allocated connection state shared by every copy of a
+// Store. Keeping it behind a pointer makes close() idempotent and lets a copy
+// notice that the connection is gone instead of dereferencing a freed handle.
+struct StoreDb {
+mut:
+	db     sqlite.Db
+	closed bool
+}
+
 // Store owns one trash directory. All operations are safe to call from
 // multiple processes; individual items are isolated by their id.
+//
+// A Store is returned as a pointer and must not be copied by value. Copies
+// share the same SQLite connection: close() on any of them closes the store for
+// all of them, after which every operation returns a "store is closed" error
+// instead of touching freed memory.
 pub struct Store {
 pub:
 	root string
 	mode u32
 mut:
-	db         sqlite.Db
+	db         &StoreDb = unsafe { nil }
 	id_gen     ?IdGen
 	id_session &rand.UUIDSession = &rand.UUIDSession{}
+	id_mu      &sync.Mutex       = &sync.Mutex{}
 	clock      Clock             = time.now
+}
+
+// conn returns the live SQLite connection or an error when the store has been
+// closed. Every database access goes through it, so a closed Store can never
+// dereference a freed handle.
+fn (s Store) conn() !&sqlite.Db {
+	if s.db == unsafe { nil } || s.db.closed {
+		return io_error('trash store `${s.root}` is closed')
+	}
+	return &s.db.db
 }
 
 // next_id returns a new item id. Injected generators take precedence; the
@@ -54,16 +80,20 @@ fn (s Store) next_id() string {
 	if gen := s.id_gen {
 		return gen()
 	}
+	s.id_mu.lock()
+	defer {
+		s.id_mu.unlock()
+	}
 	return s.id_session.next()
 }
 
 // open prepares a trash directory with default options.
-pub fn open(root string) !Store {
+pub fn open(root string) !&Store {
 	return open_with(root)
 }
 
 // open_with prepares a trash directory. Recovery is explicit via recover_if_needed().
-pub fn open_with(root string, opts StoreOptions) !Store {
+pub fn open_with(root string, opts StoreOptions) !&Store {
 	if root.trim_space() == '' {
 		return invalid_target_error('trash directory path must not be empty')
 	}
@@ -96,7 +126,7 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 		}
 	}
 	actual_mode := if root_existed { os.stat(resolved)!.mode & 0o777 } else { opts.mode }
-	mut s := Store{
+	mut s := &Store{
 		root:  resolved
 		mode:  actual_mode
 		clock: time.now
@@ -157,7 +187,9 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 			fsx.fsync_dir(os.dir(resolved))!
 		}
 	}
-	s.db = s.open_index()!
+	s.db = &StoreDb{
+		db: s.open_index()!
+	}
 	fl.release()
 	return s
 }

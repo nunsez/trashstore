@@ -172,7 +172,10 @@ of the known sizes and the number of items whose size was not measured yet.
 ```v
 import trash
 
-store := trash.open('/path/to/trash')!
+mut store := trash.open('/path/to/trash')!
+defer {
+    store.close()
+}
 report := store.recover_if_needed()!
 for warning in report.warnings {
     eprintln(warning)
@@ -197,6 +200,11 @@ Errors are `TrashError` with an `ErrorKind`. Use `scan()`, `stats()`, and the
 `*_batch()` methods for bulk work. `Entry.size` is only valid when
 `Entry.size_known` is true; call `fill_size(entry)` or `fill_sizes(entries)` to
 measure unknown sizes and persist them in the item metadata.
+
+`open()` returns a `&Store`. Do not copy a `Store` by value: copies share one
+SQLite connection, `close()` on any copy closes the store for all of them, and
+later operations return a "store is closed" error. Use one `Store` per thread;
+separate `Store` instances are independent.
 
 The core library never prints, prompts, or exits. Ids from outside the store
 should be passed to `payload_path_checked()` instead of `payload_path()`, which

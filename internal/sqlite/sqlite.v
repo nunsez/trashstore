@@ -3,9 +3,9 @@ module sqlite
 // Minimal, allocation-light bindings to the vendored SQLite amalgamation.
 //
 // Only the calls the trash store needs are exposed. The bindings are built with
-// SQLITE_THREADSAFE=1: separate Store values (and therefore separate SQLite
-// connections) may be used from different threads, as the library tests do.
-// SQLite's file locking still provides cross-process safety.
+// SQLITE_THREADSAFE=1 and every connection is opened with FULLMUTEX, so a
+// connection may be used from different threads without a data race in the C
+// layer. SQLite's file locking still provides cross-process safety.
 #flag -I@VMODROOT/thirdparty/sqlite
 #flag -DSQLITE_THREADSAFE=1
 #flag -DSQLITE_DISABLE_INTRINSIC
@@ -30,7 +30,7 @@ const sqlite_transient = voidptr(-1)
 
 const open_readwrite = 0x00000002
 const open_create = 0x00000004
-const open_nomutex = 0x00010000
+const open_fullmutex = 0x00010000
 
 fn C.sqlite3_open_v2(&char, &&C.sqlite3, i32, &char) i32
 fn C.sqlite3_close_v2(&C.sqlite3) i32
@@ -66,12 +66,12 @@ mut:
 
 // open opens (and creates) a database file with a 5 second busy timeout.
 pub fn open(path string) !Db {
-	return open_with(path, open_readwrite | open_create | open_nomutex)
+	return open_with(path, open_readwrite | open_create | open_fullmutex)
 }
 
 // open_readonly opens an existing database without creating it.
 pub fn open_readonly(path string) !Db {
-	return open_with(path, 0x00000001 | open_nomutex)
+	return open_with(path, 0x00000001 | open_fullmutex)
 }
 
 fn open_with(path string, flags int) !Db {

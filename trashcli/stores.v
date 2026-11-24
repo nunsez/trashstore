@@ -25,13 +25,13 @@ mut:
 	spec     StoreSpec
 	home_dev u64
 	roots    []string
-	stores   map[string]trash.Store
+	stores   map[string]&trash.Store
 }
 
 fn new_store_set(cli Cli, spec StoreSpec) !StoreSet {
 	mut set := StoreSet{
 		spec:   spec
-		stores: map[string]trash.Store{}
+		stores: map[string]&trash.Store{}
 	}
 	set.open_one(spec.root, cli, false)!
 	set.home_dev = os.stat(spec.root)!.dev

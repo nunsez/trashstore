@@ -51,7 +51,7 @@ fn pragma_value(mut db sqlite.Db, query string) !string {
 
 // index_pragma reads one value from the index; it is used by tests and doctor.
 fn (s Store) index_pragma(query string) !string {
-	mut db := s.db
+	mut db := s.conn()!
 	return pragma_value(mut db, query)
 }
 
@@ -209,7 +209,13 @@ pub fn reset_store(root string) ! {
 	}
 }
 
-// close releases the index connection. The store must not be used afterwards.
+// close releases the index connection. It is idempotent: closing a copy of a
+// Store closes the shared connection once, and later operations on any copy
+// return a "store is closed" error instead of using a freed handle.
 pub fn (mut s Store) close() {
-	s.db.close()
+	if s.db == unsafe { nil } || s.db.closed {
+		return
+	}
+	s.db.closed = true
+	s.db.db.close()
 }
