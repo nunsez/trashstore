@@ -13,6 +13,9 @@ moves files and directories into a private trash store and can restore or
 permanently delete them later. It never overwrites an existing file on restore;
 conflicts receive a \fB~N\fR suffix.
 .PP
+The first non-flag argument is always a command: to trash a file named
+\fBlist\fR use \fBtrash ./list\fR.
+.PP
 \fBlist\fR, \fBrestore\fR, and \fBempty\fR share one selection model: the
 current directory by default, its subtree with \fB-r\fR, or the whole trash
 with \fB--all\fR. Targets, filters, sorting, limits, and interactive selection
@@ -50,10 +53,14 @@ Show the trash location, the item count, and the total size of the items whose
 size is already known. Sizes are measured lazily; see \fBSIZES\fR.
 .TP
 .B doctor
-Report broken trash items. With \fB--repair\fR, fix id mismatches,
-pending/restoring state, invalid metadata fields, and corrupt metadata when
-the payload still exists, and measure the size of every item whose size is
-still unknown; with \fB--doctor-purge\fR, remove broken items.
+Report broken trash items and maintain the SQLite index. With \fB--repair\fR,
+finish interrupted put, restore and empty operations (using the payload as
+evidence) and measure the size of every item whose size is still unknown; with
+\fB--doctor-purge\fR, remove broken items. \fB--integrity-check\fR runs
+SQLite's integrity check, \fB--compact\fR vacuums the index, \fB--reindex\fR
+rebuilds its b-trees, \fB--backup\fR writes \fBindex.backup.db\fR, and
+\fB--rebuild\fR recreates rows from payloads (original paths are lost, so
+rebuilt items cannot be restored in place).
 .TP
 .B help
 Show help for a command.
@@ -128,7 +135,23 @@ With \fBempty\fR, never delete the \fIN\fR newest items of the selection,
 even when filters match them.
 .TP
 .B \-\-repair
-With \fBdoctor\fR, repair metadata where possible.
+With \fBdoctor\fR, finish interrupted operations and measure sizes.
+.TP
+.B \-\-integrity\-check
+With \fBdoctor\fR, run SQLite's \fBintegrity_check\fR and print the result.
+.TP
+.B \-\-compact
+With \fBdoctor\fR, vacuum the index and release free pages.
+.TP
+.B \-\-backup
+With \fBdoctor\fR, write a consistent snapshot to \fBindex.backup.db\fR.
+.TP
+.B \-\-rebuild
+With \fBdoctor\fR, recreate rows from payloads. Original paths are not stored
+elsewhere, so rebuilt items cannot be restored in place.
+.TP
+.B \-\-reindex
+With \fBdoctor\fR, rebuild the index b-trees.
 .TP
 .B \-\-doctor\-purge
 With \fBdoctor\fR, permanently remove broken items.
@@ -141,10 +164,6 @@ Explain what is happening.
 .TP
 .B \-\-no\-color
 Disable colours. The \fBNO_COLOR\fR environment variable is also honoured.
-.TP
-.B \-\-no\-sync
-Disable fsync durability. This is unsafe: data may be lost after a crash.
-Use only for disposable stores or filesystems that cannot fsync directories.
 .SH ITEM IDS
 \fBlist\fR shows the last eight hex characters of each item id. \fBrestore\fR,
 \fBempty\fR, and \fBwhere\fR accept that short id, any unique prefix of it, a
@@ -158,6 +177,40 @@ inside a directory; symlinks are never followed and special files contribute
 nothing. Items whose size is not known yet show \fB-\fR, and the total below
 the table sums only the known sizes and reports how many items are unknown.
 Use \fBtrash doctor --repair\fR to measure every unknown item at once.
+.SH SECURITY
+\fBtrash\fR keeps its store private: it must be owned by the current user and
+must not be writable by the group or others (mode 0700). \fBitems/\fR,
+\fB.gc/\fR and the lock file must be real files and
+directories, never symlinks; a symlinked item is reported as broken and is not
+repaired, restored, or purged through. \fBrestore\fR refuses to write when the
+parent of the original path no longer resolves to itself (for example, a
+component was replaced with a symlink after the item was trashed).
+\fB\-\-reset-store\fR wipes the store when its index schema is
+incompatible; without it an interactive run asks for confirmation and a
+non-interactive run leaves the store untouched. Wiping permanently deletes
+every trashed item. Trashing is not secure erasure: payload bytes may remain on
+disk.
+.SH FILES
+.TP
+.B index.db
+SQLite index and the source of truth. It contains original paths, sizes and
+ids, so treat it as sensitive metadata.
+.TP
+.B index.db-wal, index.db-shm
+Write-ahead log and shared-memory file, present while the store is in use.
+They belong to the live database, not to a backup.
+.TP
+.B index.backup.db
+Consistent snapshot written by \fBdoctor --backup\fR.
+.TP
+.B items/
+One directory per item; \fBitems/<id>/data\fR is the payload.
+.TP
+.B .gc/
+Items being permanently deleted.
+.TP
+.B .lock
+Advisory lock for destructive operations.
 .SH ENVIRONMENT
 .TP
 .B TRASH_STORE

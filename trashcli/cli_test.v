@@ -141,9 +141,9 @@ fn test_parse_finds_command_after_global_flags() {
 	assert cli.json
 }
 
-fn test_parse_no_sync() {
-	cli := Cli.parse(['trash', '--no-sync', 'list']) or { panic(err) }
-	assert cli.no_sync
+fn test_parse_reset_store() {
+	cli := Cli.parse(['trash', '--reset-store', 'list']) or { panic(err) }
+	assert cli.reset_store
 	assert cli.command == .list
 }
 
@@ -506,7 +506,7 @@ fn test_parse_rejects_interactive_outside_selection() {
 	assert failed
 }
 
-fn test_doctor_repairs_id_mismatch() {
+fn test_doctor_repairs_interrupted_put() {
 	root := cli_dir('doctor_repair')
 	defer {
 		cli_cleanup(root)
@@ -515,13 +515,15 @@ fn test_doctor_repairs_id_mismatch() {
 	store := open(store_path) or { panic(err) }
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
-	entry := store.put(file) or { panic(err) }
-	mut meta := store.read_meta(entry.id) or { panic(err) }
-	meta.id = '00000000-0000-7000-8000-000000000099'
-	store.write_meta(entry.id, meta) or { panic(err) }
+	os.setenv('TRASH_TEST_FAILPOINTS', '1', true)
+	os.setenv('TRASH_FAILPOINT', 'put:after-move', true)
+	store.put(file) or {}
+	os.unsetenv('TRASH_FAILPOINT')
+	os.unsetenv('TRASH_TEST_FAILPOINTS')
 	assert store.scan().broken.len == 1
 	cli_run(['trash', '--store', store_path, 'doctor', '--repair'])!
 	assert store.scan().broken.len == 0
+	assert store.list().len == 1
 }
 
 fn test_doctor_purge_removes_broken_item() {
@@ -534,7 +536,7 @@ fn test_doctor_purge_removes_broken_item() {
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
 	entry := store.put(file) or { panic(err) }
-	os.write_file(store.meta_path(entry.id), 'not json') or { panic(err) }
+	os.rm(store.payload_path(entry.id)) or { panic(err) }
 	assert store.scan().broken.len == 1
 	cli_run(['trash', '--store', store_path, 'doctor', '--doctor-purge'])!
 	assert store.scan().broken.len == 0
@@ -824,10 +826,10 @@ fn test_run_list_no_size_keeps_sizes_unknown() {
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 	store := open(store_path) or { panic(err) }
 	id := store.list()[0].id
-	assert !store.read_entry(id)!.size_known
+	assert !store.entry(id)!.size_known
 
 	cli_run(['trash', '--store', store_path, 'list', '--all', '--no-size']) or { panic(err) }
-	assert !store.read_entry(id)!.size_known
+	assert !store.entry(id)!.size_known
 }
 
 fn test_run_list_measures_unknown_sizes() {
@@ -843,10 +845,10 @@ fn test_run_list_measures_unknown_sizes() {
 		cli_run(['trash', '--store', store_path, '-r', dir]) or { panic(err) }
 		store := open(store_path) or { panic(err) }
 		id := store.list()[0].id
-		assert !store.read_entry(id)!.size_known
+		assert !store.entry(id)!.size_known
 
 		cli_run(['trash', '--store', store_path, 'list', '--all']) or { panic(err) }
-		entry := store.read_entry(id)!
+		entry := store.entry(id)!
 		assert entry.size_known
 		assert entry.size == 8
 		assert store.stats().unknown == 0
@@ -903,4 +905,56 @@ fn test_run_restore_sort_size_measures_before_sorting() {
 	}
 	assert os.exists(big)
 	assert !os.exists(small)
+}
+
+fn test_parse_doctor_maintenance_flags() {
+	cli := Cli.parse(['trash', 'doctor', '--integrity-check', '--compact', '--backup', '--rebuild',
+		'--reindex']) or { panic(err) }
+	assert cli.command == .doctor
+	assert cli.doctor_integrity
+	assert cli.doctor_compact
+	assert cli.doctor_backup
+	assert cli.doctor_rebuild
+	assert cli.doctor_reindex
+	mut failed := false
+	Cli.parse(['trash', 'list', '--compact']) or { failed = true }
+	assert failed
+}
+
+fn test_planned_restore_targets_avoid_each_other() {
+	root := cli_dir('planned_targets')
+	defer {
+		cli_cleanup(root)
+	}
+	base := os.join_path(root, 'a.txt')
+	mut reserved := map[string]bool{}
+	assert planned_restore_target(base, mut reserved) == base
+	assert planned_restore_target(base, mut reserved) == '${base}~1'
+	assert planned_restore_target(base, mut reserved) == '${base}~2'
+
+	cli_write(base, 'x')
+	mut reserved_existing := map[string]bool{}
+	assert planned_restore_target(base, mut reserved_existing) == '${base}~1'
+}
+
+fn test_flag_presence_is_validated_not_value() {
+	mut failed := false
+	Cli.parse(['trash', 'list', '--keep', '0']) or { failed = true }
+	assert failed
+	failed = false
+	Cli.parse(['trash', 'stats', '--limit', '0']) or { failed = true }
+	assert failed
+	failed = false
+	Cli.parse(['trash', 'stats', '--older-than', '0d']) or { failed = true }
+	assert failed
+
+	cli := Cli.parse(['trash', 'list', '--limit', '0', '--older-than', '0d']) or { panic(err) }
+	assert cli.limit_set
+	assert cli.limit == 0
+	assert cli.older_than_set
+	assert cli.older_than_seconds == 0
+
+	keep := Cli.parse(['trash', 'empty', '--all', '--yes', '--keep', '0']) or { panic(err) }
+	assert keep.keep_set
+	assert keep.keep == 0
 }

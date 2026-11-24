@@ -27,13 +27,17 @@ jobs:
           cache: true
       - run: v fmt -verify .
       - run: v vet .
+      - run: v vet ./trashcli ./internal/sqlite
       - run: v test .
       - run: v -prod test .
-      - run: v -prod -o /tmp/trash ./cmd/trash
+      - run: ./scripts/update_sqlite.sh --check
+      - name: Build (timed)
+        run: time v -prod -o /tmp/trash ./cmd/trash
       - if: runner.os == 'Linux'
         run: shellcheck scripts/*.sh
       - run: if command -v mandoc >/dev/null; then mandoc -Tlint trash.1; fi
       - run: ./scripts/concurrency_test.sh /tmp/trash
+      - run: ./scripts/stress_test.sh /tmp/trash
       - run: ./scripts/cross_device_test.sh /tmp/trash
 
   release-binaries:
@@ -80,7 +84,7 @@ jobs:
           mkdir -p "dist/${name}/completions"
           v -prod -o trash ./cmd/trash
           cp trash "dist/${name}/"
-          cp trash.1 LICENSE README.md "dist/${name}/"
+          cp trash.1 LICENSE README.md CHANGELOG.md "dist/${name}/"
           cp completions/* "dist/${name}/completions/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           rm -rf "dist/${name}"

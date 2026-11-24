@@ -44,7 +44,7 @@ fn measure_dir(path string) (u64, bool) {
 }
 
 // fill_size measures an item whose size is still unknown and persists the
-// result in its metadata. It is best-effort: an item that disappeared, is being
+// result in the index. It is best-effort: an item that disappeared, is being
 // restored or cannot be read keeps its unknown size instead of failing.
 pub fn (s Store) fill_size(entry Entry) Entry {
 	if entry.size_known || entry.kind !in [.file, .dir] {
@@ -54,7 +54,14 @@ pub fn (s Store) fill_size(entry Entry) Entry {
 	if !ok {
 		return entry
 	}
-	return s.store_size(entry.id, size) or { entry }
+	stored := s.set_item_size(entry.id, size) or { false }
+	if !stored {
+		return entry
+	}
+	mut updated := entry
+	updated.size = size
+	updated.size_known = true
+	return updated
 }
 
 // fill_sizes fills the size of every entry that is still unknown.
@@ -64,29 +71,4 @@ pub fn (s Store) fill_sizes(entries []Entry) []Entry {
 		result << s.fill_size(entry)
 	}
 	return result
-}
-
-// store_size writes a measured size while holding the item marker, so a
-// concurrent restore or empty cannot interleave with the metadata update.
-fn (s Store) store_size(id string, size u64) ?Entry {
-	marker := s.create_marker_opts('size', id, false) or { return none }
-	defer {
-		s.remove_marker_opts(marker, false)
-	}
-	mut meta := s.read_meta(id) or { return none }
-	if meta.state != 'trashed' {
-		return none
-	}
-	entry := meta.to_entry() or { return none }
-	if entry.size_known {
-		// Another process measured the item first.
-		return entry
-	}
-	meta.size = size
-	meta.size_known = true
-	s.write_meta(id, meta) or { return none }
-	mut updated := entry
-	updated.size = size
-	updated.size_known = true
-	return updated
 }

@@ -4,7 +4,7 @@ complete -c trash -n "not __fish_seen_subcommand_from $commands" -a "$commands"
 complete -c trash -l store -r -d 'Use PATH as the trash store'
 complete -c trash -l verbose -d 'Explain what is happening'
 complete -c trash -l no-color -d 'Disable colours'
-complete -c trash -l no-sync -d 'Disable fsync durability'
+complete -c trash -l reset-store -d 'Wipe the store if the index schema is incompatible'
 complete -c trash -s h -l help -d 'Show help'
 complete -c trash -s V -l version -d 'Show version'
 
@@ -52,8 +52,13 @@ complete -c trash -n "__fish_seen_subcommand_from where" -l grep -r -d 'Filter p
 complete -c trash -n "__fish_seen_subcommand_from where" -l older-than -r -d 'Minimum age'
 complete -c trash -n "__fish_seen_subcommand_from where" -l json -d 'JSON output'
 complete -c trash -n "__fish_seen_subcommand_from stats" -l json -d 'JSON output'
-complete -c trash -n "__fish_seen_subcommand_from doctor" -l repair -d 'Repair metadata'
+complete -c trash -n "__fish_seen_subcommand_from doctor" -l repair -d 'Finish interrupted operations and measure sizes'
 complete -c trash -n "__fish_seen_subcommand_from doctor" -l doctor-purge -d 'Remove broken items'
+complete -c trash -n "__fish_seen_subcommand_from doctor" -l integrity-check -d 'Run integrity_check'
+complete -c trash -n "__fish_seen_subcommand_from doctor" -l compact -d 'VACUUM the index'
+complete -c trash -n "__fish_seen_subcommand_from doctor" -l backup -d 'Write index.backup.db'
+complete -c trash -n "__fish_seen_subcommand_from doctor" -l rebuild -d 'Rebuild rows from payloads'
+complete -c trash -n "__fish_seen_subcommand_from doctor" -l reindex -d 'Rebuild index b-trees'
 complete -c trash -n "__fish_seen_subcommand_from doctor" -l json -d 'JSON output'
 
 complete -c trash -n "__fish_seen_subcommand_from put; or not __fish_seen_subcommand_from $commands" -s r -l recursive -d 'Allow directories'

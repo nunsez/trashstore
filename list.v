@@ -30,10 +30,16 @@ pub mut:
 }
 
 fn data_exists(s Store, id string) bool {
+	// Never follow a symlinked item directory: its payload belongs to someone
+	// else, and treating it as ours would let a crafted store leak files.
+	if os.is_link(s.item_dir(id)) {
+		return false
+	}
 	return os.exists(s.data_path(id)) || os.is_link(s.data_path(id))
 }
 
-// scan loads the store once, returning valid trashed entries and broken items.
+// scan loads the index once, returning valid trashed entries and broken items.
+// Orphan payloads (directories without a row) are reported, never deleted.
 pub fn (s Store) scan() ScanResult {
 	if os.is_link(s.items_dir()) {
 		return ScanResult{
@@ -45,17 +51,37 @@ pub fn (s Store) scan() ScanResult {
 			]
 		}
 	}
-	ids := os.ls(s.items_dir()) or {
+	items := s.all_items() or {
 		return ScanResult{
 			broken: [
 				BrokenItem{
 					id:     '.'
-					reason: 'cannot read items directory: ${err.msg()}'
+					reason: 'cannot read index: ${err.msg()}'
 				},
 			]
 		}
 	}
 	mut result := ScanResult{}
+	mut seen := map[string]bool{}
+	for item in items {
+		seen[item.id] = true
+		if item.state != .trashed {
+			result.broken << BrokenItem{
+				id:     item.id
+				reason: 'item is in `${item.state.label()}` state'
+			}
+			continue
+		}
+		if !data_exists(s, item.id) {
+			result.broken << BrokenItem{
+				id:     item.id
+				reason: 'payload is missing'
+			}
+			continue
+		}
+		result.entries << item.to_entry()
+	}
+	ids := os.ls(s.items_dir()) or { return result }
 	for id in ids {
 		if !is_safe_id(id) {
 			result.broken << BrokenItem{
@@ -71,31 +97,18 @@ pub fn (s Store) scan() ScanResult {
 			}
 			continue
 		}
-		if !os.is_dir(s.item_dir(id)) {
+		if !os.is_dir(s.item_dir(id)) || id in seen {
 			continue
 		}
-		entry := s.read_entry(id) or {
-			result.broken << BrokenItem{
-				id:     id
-				reason: err.msg()
-			}
-			continue
+		reason := if data_exists(s, id) {
+			'payload has no index row'
+		} else {
+			'empty item directory'
 		}
-		if entry.state != .trashed {
-			result.broken << BrokenItem{
-				id:     id
-				reason: 'item is in `${entry.state.label()}` state'
-			}
-			continue
+		result.broken << BrokenItem{
+			id:     id
+			reason: reason
 		}
-		if !data_exists(s, entry.id) {
-			result.broken << BrokenItem{
-				id:     id
-				reason: 'payload is missing'
-			}
-			continue
-		}
-		result.entries << entry
 	}
 	result.entries.sort(a.id > b.id)
 	return result
@@ -215,12 +228,17 @@ pub fn find_in(entries []Entry, ref string) ![]Entry {
 
 // find resolves an item by full id, short id, unique id prefix, or original path.
 pub fn (s Store) find(ref string) ![]Entry {
-	if ref != '' && is_safe_id(ref) && !os.is_link(s.item_dir(ref)) && os.is_dir(s.item_dir(ref)) {
-		entry := s.read_entry(ref)!
-		if entry.state != .trashed || !data_exists(s, entry.id) {
+	if ref != '' && is_safe_id(ref) {
+		item := s.get_item(ref) or {
+			if err is TrashError && err.kind == .not_found {
+				return find_in(s.scan().entries, ref)
+			}
+			return err
+		}
+		if item.state != .trashed || !data_exists(s, item.id) {
 			return not_found_error('item `${ref}` is not restorable')
 		}
-		return [entry]
+		return [item.to_entry()]
 	}
 	return find_in(s.scan().entries, ref)
 }
@@ -259,12 +277,21 @@ pub fn (s Store) stats() StoreStats {
 	}
 	mut oldest := ''
 	mut newest := ''
-	if scan.entries.len > 0 {
-		oldest = scan.entries.last().trashed_at.format_rfc3339()
-		newest = scan.entries[0].trashed_at.format_rfc3339()
+	mut oldest_unix := i64(0)
+	mut newest_unix := i64(0)
+	for i, entry in scan.entries {
+		unix := entry.trashed_at.unix()
+		if i == 0 || unix < oldest_unix {
+			oldest_unix = unix
+			oldest = entry.trashed_at.format_rfc3339()
+		}
+		if i == 0 || unix > newest_unix {
+			newest_unix = unix
+			newest = entry.trashed_at.format_rfc3339()
+		}
 	}
 	return StoreStats{
-		items:   scan.entries.len + scan.broken.len
+		items:   scan.entries.len
 		broken:  scan.broken.len
 		size:    size
 		unknown: unknown

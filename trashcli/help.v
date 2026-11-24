@@ -19,7 +19,7 @@ fn general_help() string {
 		'  --store PATH       Use PATH as the trash store\n' +
 		'  --verbose          Explain what is happening\n' +
 		'  --no-color         Disable colours\n' +
-		'  --no-sync          Disable fsync durability (unsafe)\n' +
+		'  --reset-store      Wipe the store if its index schema is incompatible\n' +
 		'  -h, --help         Show this help\n' +
 		'  -V, --version      Show program version\n\n' +
 		'Examples:\n' +
@@ -152,12 +152,17 @@ fn command_help(c Command) string {
 		}
 		.doctor {
 			'Usage: trash doctor [OPTIONS]\n\n' +
-				'Reports broken trash items. With --repair it fixes id mismatches and\n' +
-				'measures the size of items whose size is still unknown; with\n' +
-				'--doctor-purge it removes broken items.\n\n' +
+				'Reports broken trash items and maintains the SQLite index. --repair\n' +
+				'finishes interrupted put/restore/empty operations and measures unknown\n' +
+				'sizes; --doctor-purge removes broken items.\n\n' +
 				'Options:\n' +
-				'  --repair          Repair metadata where possible\n' +
-				'  --doctor-purge    Permanently remove broken items\n' +
+				'  --repair           Finish interrupted operations and measure sizes\n' +
+				'  --doctor-purge     Permanently remove broken items\n' +
+				'  --integrity-check  Run PRAGMA integrity_check\n' +
+				'  --compact          VACUUM the index and release free pages\n' +
+				'  --backup           Write a consistent index.backup.db\n' +
+				'  --rebuild          Recreate rows from payloads (original paths are lost)\n' +
+				'  --reindex          Rebuild the index b-trees\n' +
 				'  --json            Print machine-readable JSON\n' +
 				'  --store PATH      Use PATH as the trash store\n'
 		}

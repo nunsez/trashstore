@@ -75,6 +75,18 @@ pub fn (s Store) plan_put(path string, opts PutOptions) !Entry {
 	}
 }
 
+fn new_put_entry(s Store, planned Entry, id string) Entry {
+	return Entry{
+		id:            id
+		original_path: planned.original_path
+		trashed_at:    s.clock()
+		kind:          planned.kind
+		size:          planned.size
+		size_known:    planned.kind in [.symlink, .other]
+		state:         .pending
+	}
+}
+
 // put moves a file, directory or symlink into the trash.
 pub fn (s Store) put(path string, opts PutOptions) !Entry {
 	mut fl := s.lock_shared()!
@@ -84,9 +96,9 @@ pub fn (s Store) put(path string, opts PutOptions) !Entry {
 	return s.put_locked(path, opts)
 }
 
-// put_many moves several paths under one shared lock and reports per-item failures.
-// It prepares and fsyncs all item directories before moving any payload, then
-// groups the final directory fsyncs after all payloads have been moved.
+// put_many moves several paths under one shared lock and reports per-item
+// failures. It prepares and fsyncs all item directories before moving any
+// payload, then marks the moved items trashed in one transaction.
 pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 	mut fl := s.lock_shared()!
 	defer {
@@ -94,7 +106,7 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 	}
 	mut batch := PutBatch{}
 	mut prepared := []PreparedPut{}
-	mut prep_dirs := []string{}
+	mut new_items := []IndexItem{}
 	for path in paths {
 		planned := s.plan_put(path, opts) or {
 			batch.failures << batch_failure(path, 'put', err)
@@ -104,133 +116,117 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 			batch.failures << batch_failure(path, 'put', err)
 			continue
 		}
-		marker := s.create_marker_opts('put', id, false) or {
-			os.rmdir_all(item) or {}
-			batch.failures << batch_failure(path, 'put', err)
-			continue
-		}
-		entry := Entry{
-			id:            id
-			original_path: planned.original_path
-			trashed_at:    s.clock()
-			kind:          planned.kind
-			size:          planned.size
-			state:         .pending
-		}
-		meta := meta_from_entry(entry, '')
-		s.write_meta_atomic_opts(item, meta, s.sync, false) or {
-			s.remove_marker_opts(marker, false)
-			os.rmdir_all(item) or {}
-			batch.failures << batch_failure(path, 'put', err)
-			continue
-		}
+		entry := new_put_entry(s, planned, id)
+		new_items << entry.to_index_item()
 		prepared << PreparedPut{
-			entry:  entry
-			item:   item
-			marker: marker
+			entry: entry
+			item:  item
 		}
-		prep_dirs << s.items_dir()
-		prep_dirs << s.inflight_dir()
-		prep_dirs << item
 	}
-	// Make all item directories, markers and pending metadata durable before
-	// any source path is moved.
-	for dir in unique_dirs(prep_dirs) {
-		s.sync_dir(dir)!
+	s.insert_items_batch(new_items) or {
+		// Nothing was moved yet; remove the empty item directories so a failed
+		// bulk insert does not leave orphans behind.
+		for p in prepared {
+			os.rmdir_all(p.item) or {}
+		}
+		return err
 	}
+	// Make the new item directories durable before any source path is moved.
+	s.sync_dir(s.items_dir())!
+
 	mut final_dirs := []string{}
+	mut moved := []Entry{}
 	for p in prepared {
 		mut entry := p.entry
 		data := s.data_path(entry.id)
-		fsx.move_path_sync(entry.original_path, data, entry.id, false) or {
-			if os.exists(data) || os.is_link(data) {
-				// Keep the marker and the item directory so recovery can finalize it.
-				final_dirs << p.item
-				final_dirs << os.dir(entry.original_path)
-				batch.failures << batch_failure(entry.id, 'put', err)
+		// Try the common same-device rename first; a stat pair per item is
+		// more expensive than letting the kernel return EXDEV.
+		fsx.rename_noreplace(entry.original_path, data) or {
+			if err.code() == 18 {
+				fsx.move_path_sync(entry.original_path, data, entry.id) or {
+					if os.exists(data) || os.is_link(data) {
+						// Keep the pending row so recovery can finalize it.
+						final_dirs << p.item
+						final_dirs << os.dir(entry.original_path)
+						batch.failures << batch_failure(entry.original_path, 'put', err)
+						continue
+					}
+					s.delete_item(entry.id) or {}
+					os.rmdir_all(p.item) or {}
+					batch.failures << batch_failure(entry.original_path, 'put', err)
+					continue
+				}
+			} else {
+				if os.exists(data) || os.is_link(data) {
+					final_dirs << p.item
+					final_dirs << os.dir(entry.original_path)
+					batch.failures << batch_failure(entry.original_path, 'put', err)
+					continue
+				}
+				s.delete_item(entry.id) or {}
+				os.rmdir_all(p.item) or {}
+				batch.failures << batch_failure(entry.original_path, 'put', err)
 				continue
 			}
-			s.remove_marker_opts(p.marker, false)
-			os.rmdir_all(p.item) or {}
-			batch.failures << batch_failure(entry.id, 'put', err)
-			continue
 		}
 		failpoint('put:after-move') or {
 			final_dirs << p.item
 			final_dirs << os.dir(entry.original_path)
-			batch.failures << batch_failure(entry.id, 'put', err)
+			batch.failures << batch_failure(entry.original_path, 'put', err)
 			continue
 		}
 		entry.state = .trashed
-		s.write_meta_atomic_opts(p.item, meta_from_entry(entry, ''), s.sync, false) or {
-			// The payload is already in the trash; keep the marker for recovery.
-			final_dirs << p.item
-			final_dirs << os.dir(entry.original_path)
-			batch.failures << batch_failure(entry.id, 'put', err)
-			continue
-		}
-		s.remove_marker_opts(p.marker, false)
+		moved << entry
 		final_dirs << p.item
 		final_dirs << os.dir(entry.original_path)
-		batch.entries << entry
+	}
+	if moved.len > 0 {
+		mut moved_ids := []string{cap: moved.len}
+		for entry in moved {
+			moved_ids << entry.id
+		}
+		s.set_items_state(moved_ids, .trashed)!
 	}
 	final_dirs << s.items_dir()
-	final_dirs << s.inflight_dir()
 	for dir in unique_dirs(final_dirs) {
 		s.sync_dir(dir)!
 	}
+	batch.entries << moved
 	return batch
 }
 
 struct PreparedPut {
-	entry  Entry
-	item   string
-	marker string
+	entry Entry
+	item  string
 }
 
 fn (s Store) put_locked(path string, opts PutOptions) !Entry {
 	planned := s.plan_put(path, opts)!
-
 	id, item := s.create_item_dir()!
-	marker := s.create_marker('put', id) or {
-		os.rmdir_all(item) or {}
-		return err
-	}
-	mut entry := Entry{
-		id:            id
-		original_path: planned.original_path
-		trashed_at:    s.clock()
-		kind:          planned.kind
-		size:          planned.size
-		state:         .pending
-	}
-	meta := meta_from_entry(entry, '')
-	s.write_meta_atomic(item, meta) or {
-		s.remove_marker(marker)
+	mut entry := new_put_entry(s, planned, id)
+	s.insert_item(entry.to_index_item()) or {
 		os.rmdir_all(item) or {}
 		return err
 	}
 
 	data := s.data_path(id)
-	fsx.move_path_sync(planned.original_path, data, id, s.sync) or {
-		// If the payload already reached the item directory, a later fsync or
-		// cleanup error must not make us delete it. Keep the marker so recovery
-		// can finalize the item on the next run.
+	fsx.move_path_sync(planned.original_path, data, id) or {
 		if os.exists(data) || os.is_link(data) {
+			// The payload reached the item directory; keep the pending row so
+			// recovery can finalize it on the next run.
 			return err
 		}
-		s.remove_marker(marker)
+		s.delete_item(id) or {}
 		os.rmdir_all(item) or {}
 		return err
 	}
 
 	failpoint('put:after-move')!
 	entry.state = .trashed
-	s.write_meta_atomic(item, meta_from_entry(entry, '')) or {
-		// The payload is already in the trash. Keep the marker so the next
-		// open() can finalize the item instead of hiding it forever.
+	s.set_item_state(id, .trashed) or {
+		// The payload is already in the trash; the pending row lets recovery
+		// finalize the item instead of hiding it forever.
 		return err
 	}
-	s.remove_marker(marker)
 	return entry
 }

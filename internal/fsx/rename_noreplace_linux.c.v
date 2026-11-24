@@ -15,8 +15,9 @@ fn C.strerror(errnum int) &char
 pub fn rename_noreplace(src string, dst string) ! {
 	rc := C.renameat2(C.AT_FDCWD, &char(src.str), C.AT_FDCWD, &char(dst.str), u32(1))
 	if rc != 0 {
-		return error('cannot rename `${src}` to `${dst}` without replacing: ${unsafe {
-			cstring_to_vstring(C.strerror(C.errno))
-		}}')
+		errno := C.errno
+		return error_with_code('cannot rename `${src}` to `${dst}` without replacing: ${unsafe {
+			cstring_to_vstring(C.strerror(errno))
+		}}', errno)
 	}
 }

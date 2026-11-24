@@ -31,6 +31,8 @@ fn main() {
 		panic(put_batch.failures[0].message)
 	}
 	put_ms := elapsed_ms(start)
+	wal := os.join_path(store_root, 'index.db-wal')
+	wal_kb := if os.exists(wal) { os.stat(wal)!.size / 1024 } else { 0 }
 
 	start = time.now()
 	entries := store.scan().entries
@@ -63,5 +65,21 @@ fn main() {
 	}
 	restore_ms := elapsed_ms(start)
 
-	println('items=${n} put=${put_ms:.1f}ms scan=${scan_ms:.1f}ms find_full_id=${find_ms:.1f}ms list_fill=${list_fill_ms:.1f}ms list_cached=${list_cached_ms:.1f}ms batch_restore=${restore_ms:.1f}ms')
+	// Put the restored files back and empty them, so the batch delete path is
+	// measured too.
+	again := store.put_many(paths) or { panic(err) }
+	if again.failures.len > 0 {
+		panic(again.failures[0].message)
+	}
+	start = time.now()
+	emptied := store.empty_entries(store.scan().entries) or { panic(err) }
+	empty_ms := elapsed_ms(start)
+	if emptied != n {
+		panic('expected to empty ${n} entries, got ${emptied}')
+	}
+	start = time.now()
+	store.gc() or { panic(err) }
+	gc_ms := elapsed_ms(start)
+
+	println('items=${n} wal=${wal_kb}KB put=${put_ms:.1f}ms scan=${scan_ms:.1f}ms find_full_id=${find_ms:.1f}ms list_fill=${list_fill_ms:.1f}ms list_cached=${list_cached_ms:.1f}ms batch_restore=${restore_ms:.1f}ms empty=${empty_ms:.1f}ms gc=${gc_ms:.1f}ms')
 }

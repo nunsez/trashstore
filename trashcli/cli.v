@@ -52,7 +52,7 @@ pub mut:
 	store              string
 	verbose            bool
 	no_color           bool
-	no_sync            bool
+	reset_store        bool
 	json               bool
 	all                bool
 	recursive          bool
@@ -63,15 +63,23 @@ pub mut:
 	long               bool
 	ids                bool
 	limit              int
+	limit_set          bool
 	sort               string
 	kind               string
 	grep               string
 	older_than_seconds i64
+	older_than_set     bool
 	wait               bool
 	keep               int
+	keep_set           bool
 	no_size            bool
 	doctor_purge       bool
 	doctor_repair      bool
+	doctor_integrity   bool
+	doctor_compact     bool
+	doctor_backup      bool
+	doctor_rebuild     bool
+	doctor_reindex     bool
 	targets            []string
 }
 
@@ -205,6 +213,7 @@ pub fn Cli.parse(args []string) !Cli {
 			if cli.keep < 0 {
 				return error('--keep must not be negative')
 			}
+			cli.keep_set = true
 			continue
 		}
 		if arg == '--sort' || arg.starts_with('--sort=') {
@@ -259,6 +268,7 @@ pub fn Cli.parse(args []string) !Cli {
 				arg['--older-than='.len..]
 			}
 			cli.older_than_seconds = parse_duration(value)!
+			cli.older_than_set = true
 			continue
 		}
 		if arg == '--limit' {
@@ -271,6 +281,7 @@ pub fn Cli.parse(args []string) !Cli {
 			if cli.limit < 0 {
 				return error('--limit must not be negative')
 			}
+			cli.limit_set = true
 			i += 2
 			continue
 		}
@@ -281,13 +292,14 @@ pub fn Cli.parse(args []string) !Cli {
 			if cli.limit < 0 {
 				return error('--limit must not be negative')
 			}
+			cli.limit_set = true
 			i++
 			continue
 		}
 		match arg {
 			'--verbose' { cli.verbose = true }
 			'--no-color' { cli.no_color = true }
-			'--no-sync' { cli.no_sync = true }
+			'--reset-store' { cli.reset_store = true }
 			'--json' { cli.json = true }
 			'--all' { cli.all = true }
 			'-r', '--recursive' { cli.recursive = true }
@@ -301,6 +313,11 @@ pub fn Cli.parse(args []string) !Cli {
 			'--no-size' { cli.no_size = true }
 			'--repair' { cli.doctor_repair = true }
 			'--doctor-purge' { cli.doctor_purge = true }
+			'--integrity-check' { cli.doctor_integrity = true }
+			'--compact' { cli.doctor_compact = true }
+			'--backup' { cli.doctor_backup = true }
+			'--rebuild' { cli.doctor_rebuild = true }
+			'--reindex' { cli.doctor_reindex = true }
 			else {
 				if arg.starts_with('-') {
 					return error('unknown flag `${arg}`\nhint: run `trash help ${cli.command.label()}`')
@@ -348,13 +365,13 @@ fn (cli Cli) validate() ! {
 	if cli.ids && cli.long {
 		return error('--ids cannot be combined with --long')
 	}
-	if cli.limit > 0 && !(cli.command in [.list, .restore, .empty]) {
+	if cli.limit_set && !(cli.command in [.list, .restore, .empty]) {
 		return error('--limit is only supported by `list`, `restore` and `empty`')
 	}
 	if cli.sort != '' && !(cli.command in [.list, .restore, .empty]) {
 		return error('--sort is only supported by `list`, `restore` and `empty`')
 	}
-	if (cli.kind != '' || cli.grep != '' || cli.older_than_seconds > 0)
+	if (cli.kind != '' || cli.grep != '' || cli.older_than_set)
 		&& !(cli.command in [.list, .restore, .empty, .where]) {
 		return error('--kind, --grep and --older-than are only supported by `list`, `restore`, `empty` and `where`')
 	}
@@ -373,11 +390,12 @@ fn (cli Cli) validate() ! {
 	if cli.wait && cli.command != .empty {
 		return error('--wait is only supported by `empty`')
 	}
-	if cli.keep > 0 && cli.command != .empty {
+	if cli.keep_set && cli.command != .empty {
 		return error('--keep is only supported by `empty`')
 	}
-	if (cli.doctor_purge || cli.doctor_repair) && cli.command != .doctor {
-		return error('--repair and --doctor-purge are only supported by `doctor`')
+	if (cli.doctor_purge || cli.doctor_repair || cli.doctor_integrity || cli.doctor_compact
+		|| cli.doctor_backup || cli.doctor_rebuild || cli.doctor_reindex) && cli.command != .doctor {
+		return error('--repair, --doctor-purge, --integrity-check, --compact, --backup, --rebuild and --reindex are only supported by `doctor`')
 	}
 	if cli.interactive && cli.json {
 		return error('--interactive cannot be combined with --json')

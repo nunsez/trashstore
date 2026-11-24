@@ -45,6 +45,9 @@ fn (p Palette) green(s string) string {
 }
 
 fn display_path(path string, cwd string) string {
+	if path == '' {
+		return '(unknown)'
+	}
 	if path == cwd {
 		return '.'
 	}

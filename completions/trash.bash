@@ -3,7 +3,7 @@ _trash() {
     _init_completion || return
 
     local commands="put list restore empty where stats doctor help version"
-    local global_opts="--store --verbose --no-color --no-sync -h --help -V --version"
+    local global_opts="--store --verbose --no-color --reset-store -h --help -V --version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$commands $global_opts" -- "$cur") )
@@ -27,7 +27,7 @@ _trash() {
             COMPREPLY=( $(compgen -W "--json $global_opts" -- "$cur") )
             ;;
         doctor)
-            COMPREPLY=( $(compgen -W "--repair --doctor-purge --json $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--repair --doctor-purge --integrity-check --compact --backup --rebuild --reindex --json $global_opts" -- "$cur") )
             ;;
         put|*)
             COMPREPLY=( $(compgen -W "--recursive --preview --interactive --dry-run --yes $global_opts" -- "$cur") )

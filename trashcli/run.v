@@ -4,6 +4,7 @@ import internal.format
 import json2
 import os
 import time
+import trash
 
 struct EmptyReport {
 	emptied int
@@ -40,22 +41,23 @@ pub fn run(cli Cli) ! {
 			return
 		}
 		.version {
-			println('${app_name} ${app_version}')
+			println('${app_name} ${app_version} (sqlite ${trash.engine_version()})')
 			return
 		}
 		else {}
 	}
 
-	store := open_with(resolve_store(cli.store)!, sync: !cli.no_sync)!
-	if cli.no_sync {
-		eprintln(cli.palette().red('warning:') + ' --no-sync disables fsync durability guarantees')
+	store_path := resolve_store(cli.store)!
+	mut store := open_store_or_reset(store_path, cli)!
+	defer {
+		store.close()
 	}
 	recovery := store.recover_if_needed()!
-	if recovery.recovered > 0 && cli.verbose {
-		eprintln('Recovered ${recovery.recovered} interrupted trash operation(s).')
-	}
 	for warning in recovery.warnings {
 		eprintln(cli.palette().red('warning:') + ' ' + warning)
+	}
+	if recovery.recovered > 0 && cli.verbose {
+		eprintln('Recovered ${recovery.recovered} interrupted trash operation(s).')
 	}
 
 	match cli.command {
@@ -89,7 +91,7 @@ fn run_put(store Store, cli Cli) ! {
 		if batch.failures.len > 0 {
 			mut failures := []string{}
 			for failure in batch.failures {
-				failures << 'Failed to trash ${failure.id}: ${failure.message}'
+				failures << 'Failed to trash ${failure.subject}: ${failure.message}'
 			}
 			return error(failures.join('\n'))
 		}
@@ -219,8 +221,9 @@ fn run_restore(store Store, cli Cli) ! {
 	}
 	if cli.dry_run {
 		mut plans := []RestorePlan{}
+		mut reserved := map[string]bool{}
 		for entry in selected {
-			target := resolve_name_conflict(entry.original_path)
+			target := planned_restore_target(entry.original_path, mut reserved)
 			plans << RestorePlan{
 				id:            entry.id
 				original_path: entry.original_path
@@ -257,7 +260,7 @@ fn run_restore(store Store, cli Cli) ! {
 	}
 	if batch.failures.len > 0 {
 		for failure in batch.failures {
-			eprintln(cli.palette().red('error:') + ' ${failure.id}: ${failure.message}')
+			eprintln(cli.palette().red('error:') + ' ${failure.subject}: ${failure.message}')
 		}
 		return error('${batch.failures.len} item(s) could not be restored')
 	}
@@ -332,7 +335,7 @@ fn run_empty(store Store, cli Cli) ! {
 	}
 	if batch.failures.len > 0 {
 		for failure in batch.failures {
-			eprintln(cli.palette().red('error:') + ' ${failure.id}: ${failure.message}')
+			eprintln(cli.palette().red('error:') + ' ${failure.subject}: ${failure.message}')
 		}
 		return error('${batch.failures.len} item(s) could not be deleted')
 	}
@@ -433,6 +436,9 @@ fn run_where(store Store, cli Cli) ! {
 	warn_broken(scan.broken, cli)
 	input := read_where_input(cli)!
 	resolution := resolve_refs(scan.entries, input.refs, cli.recursive, input.from_stdin)!
+	for warning in resolution.warnings {
+		eprintln(cli.palette().red('warning:') + ' ' + warning)
+	}
 	selected := filter_entries(resolution.entries, ListFilter{
 		all:                true
 		kind:               cli.kind
@@ -460,15 +466,43 @@ fn run_where(store Store, cli Cli) ! {
 
 fn run_doctor(store Store, cli Cli) ! {
 	report := store.doctor(
-		repair: cli.doctor_repair
-		purge:  cli.doctor_purge
+		repair:          cli.doctor_repair
+		purge:           cli.doctor_purge
+		integrity_check: cli.doctor_integrity
+		compact:         cli.doctor_compact
+		backup:          cli.doctor_backup
+		rebuild:         cli.doctor_rebuild
+		reindex:         cli.doctor_reindex
 	)!
 	if cli.json {
 		println(json2.encode(report, escape_unicode: true))
 		return
 	}
+	mut printed := false
+	if report.integrity != '' {
+		println('integrity: ${report.integrity}')
+		printed = true
+	}
+	if report.rebuilt > 0 {
+		println('Rebuilt ${report.rebuilt} item(s) from payloads; their original paths are unknown.')
+		printed = true
+	}
+	if report.reindexed {
+		println('Reindexed.')
+		printed = true
+	}
+	if report.compacted {
+		println('Compacted.')
+		printed = true
+	}
+	if report.backup != '' {
+		println('Backup written to ${report.backup}.')
+		printed = true
+	}
 	if report.broken == 0 {
-		println('No broken items found.')
+		if !printed {
+			println('No broken items found.')
+		}
 	} else {
 		for item in report.items {
 			println('${format.short_id(item.id)}  ${item.reason}  [${item.action}]')
@@ -478,4 +512,53 @@ fn run_doctor(store Store, cli Cli) ! {
 	if cli.doctor_repair {
 		println('${report.sized} size(s) measured, ${report.unknown} size(s) unknown.')
 	}
+}
+
+// planned_restore_target mirrors resolve_name_conflict for a dry run: it also
+// skips targets that earlier plans in the same run have already claimed, so the
+// printed plan matches what restore_batch will actually do.
+fn planned_restore_target(base string, mut reserved map[string]bool) string {
+	if !os.exists(base) && !os.is_link(base) && !reserved[base] {
+		reserved[base] = true
+		return base
+	}
+	mut counter := 1
+	for {
+		candidate := '${base}~${counter}'
+		if !os.exists(candidate) && !os.is_link(candidate) && !reserved[candidate] {
+			reserved[candidate] = true
+			return candidate
+		}
+		counter++
+	}
+	return base
+}
+
+fn open_store_or_reset(path string, cli Cli) !Store {
+	return open_with(path) or {
+		if err is trash.TrashError && err.kind == .schema_mismatch {
+			if cli.reset_store {
+				confirm_reset(path, err, true)!
+			} else if os.is_atty(0) != 0 {
+				confirm_reset(path, err, false)!
+			} else {
+				return error('${err.msg()}\nhint: re-run interactively to wipe the store, or pass --reset-store')
+			}
+			return open_with(path)
+		}
+		return err
+	}
+}
+
+fn confirm_reset(path string, err IError, assume_yes bool) ! {
+	if !assume_yes {
+		eprintln(err.msg())
+		eprintln('Wiping `${path}` permanently deletes every trashed item.')
+		eprint('Wipe the store and start fresh? [y/N] ')
+		answer := os.get_line().trim_space().to_lower()
+		if answer != 'y' && answer != 'yes' {
+			return error('store left unchanged; install the previous version of trash to keep using it')
+		}
+	}
+	trash.reset_store(path)!
 }

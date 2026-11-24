@@ -3,7 +3,7 @@ set -euo pipefail
 
 TRASH_BIN=${1:-./trash}
 TRASH_BIN=$(cd "$(dirname "$TRASH_BIN")" && pwd)/$(basename "$TRASH_BIN")
-N=${N:-40}
+N=${N:-60}
 WORK=$(mktemp -d)
 STORE="$WORK/trash"
 trap 'rm -rf "$WORK"' EXIT

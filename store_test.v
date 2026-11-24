@@ -2,8 +2,9 @@ module trash
 
 import internal.format
 import internal.fsx
-import json2
+import internal.sqlite
 import os
+import sync
 import time
 
 fn core_dir(name string) string {
@@ -26,8 +27,125 @@ fn core_put(store Store, path string, recursive bool) Entry {
 	return store.put(path, recursive: recursive) or { panic(err) }
 }
 
-fn core_meta(store Store, id string) Meta {
-	return store.read_meta(id) or { panic(err) }
+fn core_insert(store Store, id string, state EntryState, original string) {
+	store.insert_item(IndexItem{
+		id:            id
+		original_path: original
+		trashed_at:    time.now()
+		kind:          .file
+		state:         state
+	}) or { panic(err) }
+}
+
+fn core_insert_kind(store Store, id string, state EntryState, original string, kind EntryKind) {
+	store.insert_item(IndexItem{
+		id:            id
+		original_path: original
+		trashed_at:    time.now()
+		kind:          kind
+		state:         state
+	}) or { panic(err) }
+}
+
+fn restore_env(name string, prev string) {
+	if prev == '' {
+		os.unsetenv(name)
+	} else {
+		os.setenv(name, prev, true)
+	}
+}
+
+// with_failpoint runs f with the failpoint enabled and restores the previous
+// environment afterwards, so tests cannot leak failpoints into each other.
+fn with_failpoint(name string, f fn () !) ! {
+	prev_enabled := os.getenv('TRASH_TEST_FAILPOINTS')
+	prev_name := os.getenv('TRASH_FAILPOINT')
+	os.setenv('TRASH_TEST_FAILPOINTS', '1', true)
+	os.setenv('TRASH_FAILPOINT', name, true)
+	defer {
+		restore_env('TRASH_TEST_FAILPOINTS', prev_enabled)
+		restore_env('TRASH_FAILPOINT', prev_name)
+	}
+	f()!
+}
+
+// run_parallel runs independent tasks in parallel and waits for all of them.
+// Tasks must not mutate shared state; they are expected to touch the filesystem
+// through their own Store instance.
+fn run_parallel(tasks []fn ()) {
+	mut wg := sync.new_waitgroup()
+	wg.add(tasks.len)
+	for task in tasks {
+		spawn fn [task, mut wg] () {
+			defer {
+				wg.done()
+			}
+			task()
+		}()
+	}
+	wg.wait()
+}
+
+// store_temp_files returns temporary files left behind by interrupted writes.
+fn store_temp_files(root string) []string {
+	mut dirs := [root, os.join_path(root, 'items'), os.join_path(root, '.gc')]
+	for id in os.ls(os.join_path(root, 'items')) or { []string{} } {
+		dirs << os.join_path(root, 'items', id)
+	}
+	mut found := []string{}
+	for dir in dirs {
+		for name in os.ls(dir) or { []string{} } {
+			if name.ends_with('.tmp') || name.contains('.trash-tmp-') {
+				found << os.join_path(dir, name)
+			}
+		}
+	}
+	return found
+}
+
+fn assert_no_temp_files(root string) {
+	files := store_temp_files(root)
+	assert files.len == 0, 'temporary files left in store: ${files}'
+}
+
+fn test_parallel_put_is_consistent() {
+	root := core_dir('parallel_put')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	open(trash) or { panic(err) }
+	mut tasks := []fn (){}
+	for i in 0 .. 8 {
+		tasks << fn [root, trash, i] () {
+			store := open(trash) or { panic(err) }
+			file := os.join_path(root, 'f${i}')
+			core_write(file, 'x')
+			store.put(file) or { panic(err) }
+		}
+	}
+	run_parallel(tasks)
+	store := open(trash) or { panic(err) }
+	assert store.list().len == 8
+	assert store.count_items() == 8
+	assert_no_temp_files(store.root)
+}
+
+fn test_put_restore_empty_leave_no_temp_files() {
+	root := core_dir('no_temp_files')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	assert_no_temp_files(store.root)
+	store.restore(entry.id) or { panic(err) }
+	assert_no_temp_files(store.root)
+	entry2 := core_put(store, file, false)
+	store.empty_entries([entry2]) or { panic(err) }
+	assert_no_temp_files(store.root)
 }
 
 fn test_percent_path_round_trip() {
@@ -85,12 +203,182 @@ fn test_open_creates_layout() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	assert os.is_dir(store.items_dir())
-	assert os.is_dir(store.inflight_dir())
 	assert os.is_dir(store.gc_dir())
 	assert os.exists(store.lock_path())
 }
 
-fn test_put_file_moves_payload_and_writes_meta() {
+// regression: S3 — a store writable by the group allows symlink planting.
+fn test_open_rejects_group_or_world_writable_store() {
+	root := core_dir('perm')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	os.mkdir_all(trash) or { panic(err) }
+
+	for mode in [0o770, 0o777, 0o702] {
+		os.chmod(trash, mode) or { panic(err) }
+		mut failed := false
+		open(trash) or { failed = true }
+		assert failed, 'mode 0${mode:o} must be rejected'
+	}
+
+	os.chmod(trash, 0o770) or { panic(err) }
+	open_with(trash, allow_insecure: true) or { panic(err) }
+
+	os.chmod(trash, 0o700) or { panic(err) }
+	open(trash) or { panic(err) }
+}
+
+// regression: S4 — an unsafe Entry.id used to rename the whole items/ tree.
+fn test_batch_apis_reject_unsafe_ids() {
+	root := core_dir('unsafe_ids')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	for id in ['', '.', '..', '../x', 'x/y', 'x\\y', 'x\x00y'] {
+		bad := Entry{
+			id:            id
+			original_path: '/tmp/x'
+			trashed_at:    time.now()
+			kind:          .file
+			size:          0
+			size_known:    false
+			state:         .trashed
+		}
+		empty := store.empty_batch([bad]) or { panic(err) }
+		assert empty.failures.len == 1, 'empty_batch must reject id `${id}`'
+		assert empty.emptied == 0
+		restored := store.restore_batch([bad]) or { panic(err) }
+		assert restored.failures.len == 1, 'restore_batch must reject id `${id}`'
+		assert restored.results.len == 0
+		assert store.list().len == 1
+		assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
+	}
+	// The valid item survived and is still restorable.
+	assert store.list()[0].id == entry.id
+	store.restore(entry.id) or { panic(err) }
+	assert (os.read_file(file) or { '' }) == 'x'
+}
+
+fn test_index_schema_and_pragmas() {
+	root := core_dir('index_schema')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	assert os.is_file(store.index_path())
+	assert store.index_pragma('PRAGMA journal_mode')! == 'wal'
+	assert store.index_pragma('PRAGMA page_size')! == '8192'
+	assert store.index_pragma('PRAGMA auto_vacuum')! == '2'
+	assert store.index_pragma('PRAGMA foreign_keys')! == '1'
+	assert store.index_pragma('PRAGMA synchronous')! == '2'
+	assert store.index_pragma('PRAGMA trusted_schema')! == '0'
+	assert store.index_pragma('PRAGMA application_id')! == '${index_application_id}'
+	assert store.index_pragma("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='items'")! == '1'
+	assert store.index_pragma('PRAGMA user_version')! == '2'
+	// Reopening is idempotent: the schema version does not change.
+	store2 := open(os.join_path(root, 'trash')) or { panic(err) }
+	assert store2.index_pragma('PRAGMA user_version')! == '2'
+}
+
+fn test_index_rejects_unknown_schema_version() {
+	root := core_dir('index_version')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	store := open(trash) or { panic(err) }
+	mut db := store.db
+	db.exec('PRAGMA user_version = 99')!
+	db.close()
+	mut failed := false
+	open(trash) or {
+		failed = true
+		assert err.msg().contains('schema version 99')
+		assert err is TrashError
+		if err is TrashError {
+			assert err.kind == .schema_mismatch
+		}
+	}
+	assert failed
+}
+
+fn test_reset_store_removes_only_store_entries() {
+	root := core_dir('reset_store')
+	defer {
+		core_cleanup(root)
+	}
+	trash_path := os.join_path(root, 'trash')
+	store := open(trash_path) or { panic(err) }
+	item_dir := store.item_dir('abc')
+	os.mkdir_all(item_dir) or { panic(err) }
+	os.write_file(os.join_path(item_dir, 'data'), 'payload') or { panic(err) }
+	keep := os.join_path(trash_path, 'keep.txt')
+	os.write_file(keep, 'keep') or { panic(err) }
+	mut db := store.db
+	db.exec('PRAGMA user_version = 99')!
+	db.close()
+	reset_store(trash_path)!
+	assert !os.exists(store.items_dir())
+	assert !os.exists(store.index_path())
+	assert !os.exists(store.lock_path())
+	assert os.exists(keep)
+	store2 := open(trash_path) or { panic(err) }
+	assert store2.index_pragma('PRAGMA user_version')! == '2'
+	assert store2.index_pragma('SELECT COUNT(*) FROM items')! == '0'
+}
+
+fn test_index_rejects_foreign_database_and_garbage() {
+	root := core_dir('index_foreign')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	os.mkdir_all(trash) or { panic(err) }
+	mut db := sqlite.open(os.join_path(trash, 'index.db'))!
+	db.exec('CREATE TABLE t (x INTEGER)')!
+	db.close()
+	mut failed := false
+	open(trash) or {
+		failed = true
+		assert err.msg().contains('not a trash index')
+	}
+	assert failed
+
+	os.rm(os.join_path(trash, 'index.db')) or { panic(err) }
+	os.write_file(os.join_path(trash, 'index.db'), 'definitely not sqlite') or { panic(err) }
+	failed = false
+	open(trash) or {
+		failed = true
+		assert err.msg().contains('not a usable trash index')
+	}
+	assert failed
+}
+
+fn test_index_rejects_symlink() {
+	root := core_dir('index_symlink')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	os.mkdir_all(trash) or { panic(err) }
+	outside := os.join_path(root, 'outside.db')
+	os.write_file(outside, '') or { panic(err) }
+	os.symlink(outside, os.join_path(trash, 'index.db')) or { panic(err) }
+	mut failed := false
+	open(trash) or {
+		failed = true
+		assert err.msg().contains('must not be a symlink')
+	}
+	assert failed
+}
+
+fn test_put_file_moves_payload_and_indexes() {
 	root := core_dir('put_file')
 	defer {
 		core_cleanup(root)
@@ -112,12 +400,11 @@ fn test_put_file_moves_payload_and_writes_meta() {
 	filled := store.fill_size(entry)
 	assert filled.size_known
 	assert filled.size == 5
-	meta := core_meta(store, entry.id)
-	assert meta.size == 5
-	assert meta.size_known
-	assert meta.state == 'trashed'
-	assert percent_decode_path(meta.original_path) or { '' } == file
-	assert meta.restore_to == ''
+	stored := store.entry(entry.id)!
+	assert stored.size == 5
+	assert stored.size_known
+	assert stored.state == .trashed
+	assert stored.original_path == file
 }
 
 fn test_put_directory_requires_recursive() {
@@ -226,9 +513,8 @@ fn test_list_skips_broken_items() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	id := 'broken'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
-	core_write(store.meta_path(id), 'not json')
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_insert(store, id, .pending, os.join_path(root, 'missing.txt'))
 	assert store.list().len == 0
 
 	// metadata says trashed, but payload is missing
@@ -237,6 +523,40 @@ fn test_list_skips_broken_items() {
 	entry := core_put(store, file, false)
 	os.rm(store.data_path(entry.id)) or { panic(err) }
 	assert store.list().len == 0
+}
+
+// regression: S1 — restore must not write through a symlinked parent directory.
+fn test_restore_refuses_symlink_parent() {
+	root := core_dir('restore_symlink_parent')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	work := os.join_path(root, 'work')
+	dir := os.join_path(work, 'dir')
+	os.mkdir_all(dir) or { panic(err) }
+	file := os.join_path(dir, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+
+	outside := os.join_path(root, 'outside')
+	os.mkdir_all(outside) or { panic(err) }
+	os.rmdir_all(dir) or { panic(err) }
+	os.symlink(outside, dir) or { panic(err) }
+
+	mut failed := false
+	store.restore(entry.id) or {
+		failed = true
+		assert err.msg().contains('resolves to')
+	}
+	assert failed
+	assert !os.exists(os.join_path(outside, 'a.txt'))
+	assert store.list().len == 1
+
+	os.rm(dir) or { panic(err) }
+	os.mkdir_all(dir) or { panic(err) }
+	store.restore(entry.id) or { panic(err) }
+	assert (os.read_file(file) or { '' }) == 'x'
 }
 
 fn test_restore_by_id() {
@@ -370,20 +690,17 @@ fn test_failpoint_restore_after_move_is_recovered() {
 	file := os.join_path(root, 'a.txt')
 	core_write(file, 'x')
 	entry := core_put(store, file, false)
-	os.setenv('TRASH_TEST_FAILPOINTS', '1', true)
-	os.setenv('TRASH_FAILPOINT', 'restore:after-move', true)
-	defer {
-		os.unsetenv('TRASH_FAILPOINT')
-		os.unsetenv('TRASH_TEST_FAILPOINTS')
-	}
 	mut failed := false
-	store.restore(entry.id) or { failed = true }
+	with_failpoint('restore:after-move', fn [store, entry] () ! {
+		store.restore(entry.id)!
+	}) or { failed = true }
 	assert failed
-	os.unsetenv('TRASH_FAILPOINT')
+	assert os.getenv('TRASH_FAILPOINT') == ''
 	store.recover_if_needed() or { panic(err) }
 	assert (os.read_file(file) or { '' }) == 'x'
 	assert store.list().len == 0
 	assert !os.exists('${file}~1')
+	assert_no_temp_files(store.root)
 }
 
 fn test_failpoint_empty_after_rename_is_recovered() {
@@ -456,50 +773,125 @@ fn test_failpoint_put_after_move_is_recovered() {
 	assert !os.exists(file)
 }
 
-fn test_doctor_recovers_invalid_metadata() {
-	root := core_dir('doctor_invalid_meta')
+// regression: S2 — doctor must never write through an item-directory symlink.
+// regression: S2/S3 — every store directory must be a real directory.
+fn test_open_rejects_symlinked_store_dirs() {
+	mut roots := []string{}
 	defer {
-		core_cleanup(root)
+		for root in roots {
+			core_cleanup(root)
+		}
 	}
-	store := open(os.join_path(root, 'trash')) or { panic(err) }
-	id := 'doctor-invalid-meta'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
-	core_write(store.data_path(id), 'x')
-	os.write_file(store.meta_path(id), '{not json') or { panic(err) }
-
-	report := store.doctor(repair: true) or { panic(err) }
-	assert report.repaired == 1
-	entry := store.list()[0]
-	assert entry.id == id
-	assert entry.original_path.ends_with('/recovered/${id}')
+	for dirname in ['items', '.gc'] {
+		root := core_dir('symlink_dir_${dirname.replace('.', 'dot')}')
+		roots << root
+		outside := os.join_path(root, 'outside')
+		os.mkdir_all(outside) or { panic(err) }
+		trash := os.join_path(root, 'trash')
+		os.mkdir_all(trash) or { panic(err) }
+		os.symlink(outside, os.join_path(trash, dirname)) or { panic(err) }
+		mut failed := false
+		open(trash) or { failed = true }
+		assert failed, 'open must reject a symlinked ${dirname}'
+		assert (os.ls(outside) or { []string{} }).len == 0
+	}
 }
 
-fn test_doctor_repairs_invalid_metadata_fields() {
-	root := core_dir('doctor_invalid_fields')
+// regression: S2 — a crafted symlinked item must not be restored through.
+fn test_restore_refuses_symlinked_item_dir() {
+	root := core_dir('symlink_item_restore')
 	defer {
 		core_cleanup(root)
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
-	id := 'doctor-invalid-fields'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
-	core_write(store.data_path(id), 'x')
-	meta := Meta{
+	outside := os.join_path(root, 'outside')
+	os.mkdir_all(outside) or { panic(err) }
+	core_write(os.join_path(outside, 'data'), 'evil')
+	id := 'evil'
+	core_insert(store, id, .trashed, os.join_path(root, 'stolen.txt'))
+	os.symlink(outside, store.item_dir(id)) or { panic(err) }
+	bad := Entry{
 		id:            id
-		state:         'bogus'
-		original_path: '%ZZ'
-		trashed_at:    'not-a-time'
-		kind:          'bogus'
+		original_path: os.join_path(root, 'stolen.txt')
+		trashed_at:    time.now()
+		kind:          .file
+		size:          0
+		size_known:    false
+		state:         .trashed
 	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
+	batch := store.restore_batch([bad]) or { panic(err) }
+	assert batch.failures.len == 1
+	assert batch.results.len == 0
+	assert (os.read_file(os.join_path(outside, 'data')) or { '' }) == 'evil'
+	assert !os.exists(os.join_path(root, 'stolen.txt'))
+}
+
+fn test_gc_does_not_follow_symlinks() {
+	root := core_dir('gc_symlink')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	outside := os.join_path(root, 'outside')
+	os.mkdir_all(outside) or { panic(err) }
+	core_write(os.join_path(outside, 'keep'), 'x')
+
+	os.symlink(outside, os.join_path(store.gc_dir(), 'link')) or { panic(err) }
+	store.gc() or { panic(err) }
+	assert !os.is_link(os.join_path(store.gc_dir(), 'link'))
+	assert (os.read_file(os.join_path(outside, 'keep')) or { '' }) == 'x'
+
+	os.rmdir_all(store.gc_dir()) or { panic(err) }
+	os.symlink(outside, store.gc_dir()) or { panic(err) }
+	mut failed := false
+	store.gc() or { failed = true }
+	assert failed
+	assert (os.read_file(os.join_path(outside, 'keep')) or { '' }) == 'x'
+}
+
+fn test_doctor_does_not_follow_item_symlink() {
+	root := core_dir('doctor_item_symlink')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	outside := os.join_path(root, 'outside')
+	os.mkdir_all(outside) or { panic(err) }
+	core_write(os.join_path(outside, 'data'), 'x')
+	id := 'symlink-item'
+	os.symlink(outside, store.item_dir(id)) or { panic(err) }
 
 	report := store.doctor(repair: true) or { panic(err) }
-	assert report.repaired == 1
-	entry := store.list()[0]
-	assert entry.state == .trashed
-	assert entry.kind == .file
-	assert entry.original_path.ends_with('/recovered/${id}')
+	assert report.broken == 1
+	assert report.repaired == 0
+	assert os.is_link(store.item_dir(id))
+
+	report2 := store.doctor(repair: true, purge: true) or { panic(err) }
+	assert report2.repaired == 0
+	assert (os.read_file(os.join_path(outside, 'data')) or { '' }) == 'x'
+	assert os.is_link(store.item_dir(id))
+}
+
+fn test_doctor_reports_orphan_payload() {
+	root := core_dir('doctor_orphan')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	id := 'doctor-orphan'
+	item := store.item_dir(id)
+	os.mkdir_all(item) or { panic(err) }
+	core_write(store.data_path(id), 'precious')
+
+	report := store.doctor(repair: true) or { panic(err) }
+	assert report.broken == 1
+	assert report.purged == 0
+	assert store.list().len == 0
+	assert (os.read_file(store.data_path(id)) or { '' }) == 'precious'
+
+	purged := store.doctor(purge: true) or { panic(err) }
+	assert purged.purged == 1
+	assert !os.is_dir(item)
 }
 
 fn test_doctor_repairs_pending_item() {
@@ -509,21 +901,13 @@ fn test_doctor_repairs_pending_item() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	id := 'doctor-pending'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
 	core_write(store.data_path(id), 'x')
-	meta := Meta{
-		id:            id
-		state:         'pending'
-		original_path: percent_encode_path(os.join_path(root, 'a.txt'))
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
+	core_insert(store, id, .pending, os.join_path(root, 'a.txt'))
 
 	report := store.doctor(repair: true) or { panic(err) }
 	assert report.repaired == 1
-	assert core_meta(store, id).state == 'trashed'
+	assert store.entry(id)!.state == .trashed
 	assert store.list().len == 1
 }
 
@@ -534,23 +918,12 @@ fn test_recover_put_pending_with_data() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	id := 'recover-put-ok'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
 	core_write(store.data_path(id), 'x')
-	meta := Meta{
-		id:            id
-		state:         'pending'
-		original_path: percent_encode_path(os.join_path(root, 'a.txt'))
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-		size:          1
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	marker := store.create_marker('put', id) or { panic(err) }
+	core_insert(store, id, .pending, os.join_path(root, 'a.txt'))
 
 	store.recover() or { panic(err) }
-	assert core_meta(store, id).state == 'trashed'
-	assert !os.exists(marker)
+	assert store.entry(id)!.state == .trashed
 }
 
 fn test_recover_put_pending_without_data_removes_item() {
@@ -562,18 +935,13 @@ fn test_recover_put_pending_without_data_removes_item() {
 	id := 'recover-put-missing'
 	item := store.item_dir(id)
 	os.mkdir_all(item) or { panic(err) }
-	meta := Meta{
-		id:            id
-		state:         'pending'
-		original_path: percent_encode_path(os.join_path(root, 'a.txt'))
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	store.create_marker('put', id) or { panic(err) }
+	core_insert(store, id, .pending, os.join_path(root, 'a.txt'))
 
 	store.recover() or { panic(err) }
 	assert !os.is_dir(item)
+	mut failed := false
+	store.entry(id) or { failed = true }
+	assert failed
 }
 
 fn test_recover_restore_with_data_rolls_back_to_trashed() {
@@ -583,24 +951,17 @@ fn test_recover_restore_with_data_rolls_back_to_trashed() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	id := 'recover-restore-data'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
+	target := os.join_path(root, 'a.txt')
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
 	core_write(store.data_path(id), 'x')
-	meta := Meta{
-		id:            id
-		state:         'restoring'
-		original_path: percent_encode_path(os.join_path(root, 'a.txt'))
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-		restore_to:    percent_encode_path(os.join_path(root, 'a.txt'))
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	store.create_marker('restore', id) or { panic(err) }
+	core_insert(store, id, .restoring, target)
+	mut item := store.get_item(id)!
+	item.restore_to = percent_encode_path(target)
+	store.update_item(item)!
 
 	store.recover() or { panic(err) }
-	meta_after := core_meta(store, id)
-	assert meta_after.state == 'trashed'
-	assert meta_after.restore_to == ''
+	assert store.entry(id)!.state == .trashed
+	assert store.get_item(id)!.restore_to == ''
 }
 
 fn test_recover_restore_completes_same_device_rename() {
@@ -616,18 +977,12 @@ fn test_recover_restore_completes_same_device_rename() {
 	core_write(data, 'x')
 	target := os.join_path(root, 'a.txt')
 	st := os.lstat(data) or { panic(err) }
-	meta := Meta{
-		id:            id
-		state:         'restoring'
-		original_path: percent_encode_path(target)
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-		restore_to:    percent_encode_path(target)
-		data_dev:      st.dev
-		data_ino:      st.inode
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	store.create_marker('restore', id) or { panic(err) }
+	core_insert(store, id, .restoring, target)
+	mut indexed := store.get_item(id)!
+	indexed.restore_to = percent_encode_path(target)
+	indexed.data_dev = st.dev
+	indexed.data_ino = st.inode
+	store.update_item(indexed)!
 	os.rename(data, target) or { panic(err) }
 
 	store.recover() or { panic(err) }
@@ -650,20 +1005,14 @@ fn test_recover_restore_completes_journaled_copy_target() {
 	core_write(target, 'x')
 	data_st := os.lstat(data) or { panic(err) }
 	target_st := os.lstat(target) or { panic(err) }
-	meta := Meta{
-		id:            id
-		state:         'restoring'
-		original_path: percent_encode_path(target)
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-		restore_to:    percent_encode_path(target)
-		data_dev:      data_st.dev
-		data_ino:      data_st.inode
-		target_dev:    target_st.dev
-		target_ino:    target_st.inode
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	store.create_marker('restore', id) or { panic(err) }
+	core_insert(store, id, .restoring, target)
+	mut indexed := store.get_item(id)!
+	indexed.restore_to = percent_encode_path(target)
+	indexed.data_dev = data_st.dev
+	indexed.data_ino = data_st.inode
+	indexed.target_dev = target_st.dev
+	indexed.target_ino = target_st.inode
+	store.update_item(indexed)!
 
 	store.recover() or { panic(err) }
 	assert !os.is_dir(item)
@@ -679,16 +1028,11 @@ fn test_recover_restore_without_data_removes_item() {
 	id := 'recover-restore-missing'
 	item := store.item_dir(id)
 	os.mkdir_all(item) or { panic(err) }
-	meta := Meta{
-		id:            id
-		state:         'restoring'
-		original_path: percent_encode_path(os.join_path(root, 'a.txt'))
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-		restore_to:    percent_encode_path(os.join_path(root, 'a.txt'))
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	store.create_marker('restore', id) or { panic(err) }
+	target := os.join_path(root, 'a.txt')
+	core_insert(store, id, .restoring, target)
+	mut indexed := store.get_item(id)!
+	indexed.restore_to = percent_encode_path(target)
+	store.update_item(indexed)!
 
 	store.recover() or { panic(err) }
 	assert !os.is_dir(item)
@@ -704,7 +1048,7 @@ fn test_recover_empty_moves_to_gc() {
 	item := store.item_dir(id)
 	os.mkdir_all(item) or { panic(err) }
 	core_write(store.data_path(id), 'x')
-	store.create_marker('empty', id) or { panic(err) }
+	core_insert(store, id, .pending_empty, os.join_path(root, 'a.txt'))
 
 	store.recover() or { panic(err) }
 	assert !os.is_dir(item)
@@ -732,8 +1076,7 @@ fn test_put_path_with_spaces_and_tabs() {
 	core_write(file, 'x')
 	entry := core_put(store, file, false)
 	assert entry.original_path == file
-	meta := core_meta(store, entry.id)
-	assert percent_decode_path(meta.original_path) or { '' } == file
+	assert store.entry(entry.id)!.original_path == file
 }
 
 fn test_put_ids_are_monotonic() {
@@ -763,7 +1106,7 @@ fn test_percent_path_rejects_nul() {
 	assert failed
 }
 
-fn test_recover_keeps_orphan_payload_without_meta() {
+fn test_recover_keeps_orphan_payload() {
 	root := core_dir('recover_orphan')
 	defer {
 		core_cleanup(root)
@@ -773,7 +1116,6 @@ fn test_recover_keeps_orphan_payload_without_meta() {
 	item := store.item_dir(id)
 	os.mkdir_all(item) or { panic(err) }
 	core_write(store.data_path(id), 'precious')
-	store.create_marker('put', id) or { panic(err) }
 
 	store.recover() or { panic(err) }
 	assert os.is_dir(item)
@@ -787,18 +1129,8 @@ fn test_find_rejects_ambiguous_id_prefix() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	for id in ['aaa1', 'aaa2'] {
-		item := store.item_dir(id)
-		os.mkdir_all(item) or { panic(err) }
+		core_insert(store, id, .trashed, os.join_path(root, '${id}.txt'))
 		core_write(store.data_path(id), 'x')
-		meta := Meta{
-			id:            id
-			state:         'trashed'
-			original_path: percent_encode_path(os.join_path(root, '${id}.txt'))
-			trashed_at:    time.now().format_rfc3339()
-			kind:          'file'
-			size:          1
-		}
-		store.write_meta_atomic(item, meta) or { panic(err) }
 	}
 	mut failed := false
 	store.find('aaa') or { failed = true }
@@ -876,18 +1208,8 @@ fn test_find_rejects_ambiguous_short_id() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	for id in ['aaaa-1111-2222-3333-4444deadbeef', 'bbbb-1111-2222-3333-5555deadbeef'] {
-		item := store.item_dir(id)
-		os.mkdir_all(item) or { panic(err) }
+		core_insert(store, id, .trashed, os.join_path(root, '${id}.txt'))
 		core_write(store.data_path(id), 'x')
-		meta := Meta{
-			id:            id
-			state:         'trashed'
-			original_path: percent_encode_path(os.join_path(root, '${id}.txt'))
-			trashed_at:    time.now().format_rfc3339()
-			kind:          'file'
-			size:          1
-		}
-		store.write_meta_atomic(item, meta) or { panic(err) }
 	}
 	mut failed := false
 	store.find('deadbeef') or { failed = true }
@@ -913,7 +1235,7 @@ fn test_copy_path_preserves_tree_and_modes() {
 		os.symlink('a.txt', os.join_path(src, 'link')) or { panic(err) }
 
 		dst := os.join_path(root, 'dst')
-		fsx.copy_path_sync(src, dst, true) or { panic(err) }
+		fsx.copy_path_sync(src, dst) or { panic(err) }
 		assert (os.read_file(os.join_path(dst, 'a.txt')) or { '' }) == 'hello'
 		assert (os.stat(os.join_path(dst, 'a.txt')) or { panic(err) }).mode & 0o777 == 0o640
 		assert (os.read_file(os.join_path(dst, 'sub', 'b.txt')) or { '' }) == 'nested'
@@ -954,62 +1276,13 @@ fn test_scan_reports_entries_and_broken_items() {
 	entry := core_put(store, good, false)
 
 	bad_id := 'broken-item'
-	bad_item := store.item_dir(bad_id)
-	os.mkdir_all(bad_item) or { panic(err) }
-	core_write(store.meta_path(bad_id), 'not json')
+	core_insert(store, bad_id, .pending, os.join_path(root, 'broken.txt'))
 
 	scan := store.scan()
 	assert scan.entries.len == 1
 	assert scan.entries[0].id == entry.id
 	assert scan.broken.len == 1
 	assert scan.broken[0].id == bad_id
-}
-
-fn test_meta_id_mismatch_is_rejected() {
-	root := core_dir('meta_mismatch')
-	defer {
-		core_cleanup(root)
-	}
-	store := open(os.join_path(root, 'trash')) or { panic(err) }
-	id := 'item-id'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
-	core_write(store.data_path(id), 'x')
-	meta := Meta{
-		id:            'other-id'
-		state:         'trashed'
-		original_path: percent_encode_path(os.join_path(root, 'x'))
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-		size:          1
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	mut failed := false
-	store.read_meta(id) or { failed = true }
-	assert failed
-	assert store.scan().broken.len == 1
-}
-
-fn test_meta_unknown_state_is_rejected() {
-	root := core_dir('meta_state')
-	defer {
-		core_cleanup(root)
-	}
-	store := open(os.join_path(root, 'trash')) or { panic(err) }
-	id := 'item-state'
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
-	core_write(store.data_path(id), 'x')
-	meta := Meta{
-		id:            id
-		state:         'garbage'
-		original_path: percent_encode_path(os.join_path(root, 'x'))
-		trashed_at:    time.now().format_rfc3339()
-		kind:          'file'
-		size:          1
-	}
-	store.write_meta_atomic(item, meta) or { panic(err) }
-	assert store.scan().broken.len == 1
 }
 
 fn test_typed_find_errors() {
@@ -1022,18 +1295,8 @@ fn test_typed_find_errors() {
 		assert err.code() == int(ErrorKind.not_found)
 	}
 	for id in ['aaa1', 'aaa2'] {
-		item := store.item_dir(id)
-		os.mkdir_all(item) or { panic(err) }
+		core_insert(store, id, .trashed, os.join_path(root, '${id}.txt'))
 		core_write(store.data_path(id), 'x')
-		meta := Meta{
-			id:            id
-			state:         'trashed'
-			original_path: percent_encode_path(os.join_path(root, '${id}.txt'))
-			trashed_at:    time.now().format_rfc3339()
-			kind:          'file'
-			size:          1
-		}
-		store.write_meta_atomic(item, meta) or { panic(err) }
 	}
 	store.find('aaa') or {
 		assert err.code() == int(ErrorKind.ambiguous)
@@ -1087,13 +1350,12 @@ fn test_recover_if_needed_finishes_pending_put() {
 	file := os.join_path(root, 'a.txt')
 	core_write(file, 'x')
 	entry := core_put(store, file, false)
-	mut meta := core_meta(store, entry.id)
-	meta.state = 'pending'
-	store.write_meta(entry.id, meta) or { panic(err) }
-	store.create_marker('put', entry.id) or { panic(err) }
+	mut item := store.get_item(entry.id)!
+	item.state = .pending
+	store.update_item(item)!
 	report := store.recover_if_needed() or { panic(err) }
 	assert report.recovered == 1
-	assert core_meta(store, entry.id).state == 'trashed'
+	assert store.entry(entry.id)!.state == .trashed
 	second := store.recover_if_needed() or { panic(err) }
 	assert second.recovered == 0
 }
@@ -1107,7 +1369,7 @@ fn test_copy_path_copies_large_file() {
 	content := '0123456789abcdef'.repeat(16 * 1024)
 	core_write(src, content)
 	dst := os.join_path(root, 'copy.bin')
-	fsx.copy_path_sync(src, dst, true) or { panic(err) }
+	fsx.copy_path_sync(src, dst) or { panic(err) }
 	assert (os.read_file(dst) or { '' }).len == content.len
 	assert (os.stat(dst) or { panic(err) }).size == u64(content.len)
 }
@@ -1121,16 +1383,15 @@ fn test_recover_restore_removes_stale_tmp() {
 	file := os.join_path(root, 'a.txt')
 	core_write(file, 'x')
 	entry := core_put(store, file, false)
-	mut meta := core_meta(store, entry.id)
-	meta.state = 'restoring'
-	meta.restore_to = percent_encode_path(file)
-	store.write_meta(entry.id, meta) or { panic(err) }
-	store.create_marker('restore', entry.id) or { panic(err) }
+	mut item := store.get_item(entry.id)!
+	item.state = .restoring
+	item.restore_to = percent_encode_path(file)
+	store.update_item(item)!
 	stale := '${file}.trash-tmp-${entry.id}'
 	core_write(stale, 'partial')
 	store.recover() or { panic(err) }
 	assert !os.exists(stale)
-	assert core_meta(store, entry.id).state == 'trashed'
+	assert store.entry(entry.id)!.state == .trashed
 }
 
 fn test_open_refuses_filesystem_root() {
@@ -1239,7 +1500,7 @@ fn test_copy_path_refuses_existing_destination() {
 	core_write(src, 'new')
 	core_write(dst, 'old')
 	mut failed := false
-	fsx.copy_path_sync(src, dst, true) or { failed = true }
+	fsx.copy_path_sync(src, dst) or { failed = true }
 	assert failed
 	assert (os.read_file(dst) or { '' }) == 'old'
 }
@@ -1258,20 +1519,6 @@ fn test_open_with_injects_id_and_clock() {
 	core_write(file, 'x')
 	entry := core_put(store, file, false)
 	assert entry.id == '00000000-0000-7000-8000-000000000001'
-}
-
-fn test_open_with_can_disable_sync() {
-	root := core_dir('no_sync')
-	defer {
-		core_cleanup(root)
-	}
-	store := open_with(os.join_path(root, 'trash'), sync: false) or { panic(err) }
-	assert !store.sync
-	file := os.join_path(root, 'a.txt')
-	core_write(file, 'x')
-	entry := core_put(store, file, false)
-	assert store.scan().entries.len == 1
-	assert entry.original_path == file
 }
 
 fn test_percent_round_trip_fuzzish() {
@@ -1306,21 +1553,6 @@ fn test_percent_decode_random_input_does_not_panic() {
 			bytes << alphabet[int((state >> 24) % alphabet.len)]
 		}
 		percent_decode_path(bytes.bytestr()) or {}
-	}
-}
-
-fn test_meta_json_random_input_does_not_panic() {
-	alphabet := '{}[]",:0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ \n'
-	mut state := u64(0xdeadbeefcafebabe)
-	for _ in 0 .. 1000 {
-		state = state * 6364136223846793005 + 1442695040888963407
-		length := int((state >> 32) % 80)
-		mut bytes := []u8{cap: length}
-		for _ in 0 .. length {
-			state = state * 6364136223846793005 + 1442695040888963407
-			bytes << alphabet[int((state >> 24) % alphabet.len)]
-		}
-		json2.decode[Meta](bytes.bytestr()) or {}
 	}
 }
 
@@ -1387,9 +1619,9 @@ fn test_fill_size_persists_directory_size() {
 		filled := store.fill_size(entry)
 		assert filled.size_known
 		assert filled.size == 8
-		meta := core_meta(store, entry.id)
-		assert meta.size_known
-		assert meta.size == 8
+		stored := store.entry(entry.id)!
+		assert stored.size_known
+		assert stored.size == 8
 
 		// A second fill must not walk the payload again.
 		again := store.fill_size(filled)
@@ -1431,7 +1663,7 @@ fn test_list_sort_size_measures_candidates() {
 	assert entries[0].original_path == big
 	assert entries[0].size == 10
 	assert entries[1].original_path == small
-	assert core_meta(store, small_entry.id).size_known
+	assert store.entry(small_entry.id)!.size_known
 }
 
 fn test_doctor_repair_measures_unknown_sizes() {
@@ -1463,43 +1695,381 @@ fn test_doctor_repair_measures_unknown_sizes() {
 	}
 }
 
-fn core_write_legacy_meta(store Store, id string, kind string, size u64, original string) {
-	item := store.item_dir(id)
-	os.mkdir_all(item) or { panic(err) }
-	data := store.data_path(id)
-	if kind == 'dir' {
-		os.mkdir_all(data) or { panic(err) }
-	} else {
-		core_write(data, 'x')
-	}
-	meta := '{"id":"${id}","state":"trashed","original_path":"${percent_encode_path(original)}","trashed_at":"${time.now().format_rfc3339()}","kind":"${kind}","size":${size},"restore_to":""}\n'
-	os.write_file(store.meta_path(id), meta) or { panic(err) }
-}
-
-fn test_legacy_metadata_size_is_known_only_when_exact() {
-	root := core_dir('legacy_size')
+fn test_failpoint_put_recovers_to_trashed() {
+	root := core_dir('fail_put')
 	defer {
 		core_cleanup(root)
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
-	core_write_legacy_meta(store, 'legacy-file', 'file', 5, os.join_path(root, 'a.txt'))
-	core_write_legacy_meta(store, 'legacy-empty', 'file', 0, os.join_path(root, 'b.txt'))
-	core_write_legacy_meta(store, 'legacy-dir', 'dir', 7, os.join_path(root, 'c'))
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	mut failed := false
+	with_failpoint('put:after-move', fn [store, file] () ! {
+		store.put(file)!
+	}) or { failed = true }
+	assert failed
+	assert !os.exists(file)
+	// The payload is in the trash, so recovery must keep it.
+	store.recover() or { panic(err) }
+	entries := store.list()
+	assert entries.len == 1
+	assert entries[0].state == .trashed
+}
 
-	file_entry := store.read_entry('legacy-file') or { panic(err) }
-	assert file_entry.size_known
-	assert file_entry.size == 5
-	empty_entry := store.read_entry('legacy-empty') or { panic(err) }
-	assert !empty_entry.size_known
-	dir_entry := store.read_entry('legacy-dir') or { panic(err) }
-	assert !dir_entry.size_known
+fn test_failpoint_restore_recovers_by_finishing() {
+	root := core_dir('fail_restore')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	mut failed := false
+	with_failpoint('restore:after-move', fn [store, entry] () ! {
+		store.restore_entries([entry])!
+	}) or { failed = true }
+	assert failed
+	assert os.exists(file)
+	store.recover() or { panic(err) }
+	assert store.count_items() == 0
+	assert !os.is_dir(store.item_dir(entry.id))
+	assert (os.read_file(file) or { '' }) == 'x'
+}
+
+fn test_failpoint_empty_recovers_by_finishing() {
+	root := core_dir('fail_empty')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	mut failed := false
+	with_failpoint('empty:after-rename', fn [store, entry] () ! {
+		store.empty_entries([entry])!
+	}) or { failed = true }
+	assert failed
+	store.recover() or { panic(err) }
+	assert store.count_items() == 0
+	assert !os.is_dir(store.item_dir(entry.id))
+	assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
+}
+
+fn test_failpoint_empty_all_recovers() {
+	root := core_dir('fail_empty_all')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	for name in ['a.txt', 'b.txt'] {
+		file := os.join_path(root, name)
+		core_write(file, 'x')
+		core_put(store, file, false)
+	}
+	mut failed := false
+	with_failpoint('empty:after-detach', fn [store] () ! {
+		store.empty()!
+	}) or { failed = true }
+	assert failed
+	// Reopening recreates items/; recovery must drop the detached generation.
+	reopened := open(os.join_path(root, 'trash')) or { panic(err) }
+	reopened.recover_if_needed() or { panic(err) }
+	assert reopened.count_items() == 0
+	assert (os.ls(reopened.gc_dir()) or { []string{} }).len == 0
+}
+
+fn test_parallel_open_of_fresh_store() {
+	root := core_dir('parallel_open')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	mut tasks := []fn (){}
+	for _ in 0 .. 8 {
+		tasks << fn [trash] () {
+			open(trash) or { panic(err) }
+		}
+	}
+	run_parallel(tasks)
+	store := open(trash) or { panic(err) }
+	assert store.count_items() == 0
+	assert store.index_pragma('PRAGMA user_version')! == '${latest_schema_version}'
+}
+
+fn test_doctor_integrity_and_backup() {
+	root := core_dir('doctor_backup')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	for name in ['a.txt', 'b.txt'] {
+		file := os.join_path(root, name)
+		core_write(file, name)
+		core_put(store, file, false)
+	}
+	report := store.doctor(integrity_check: true, backup: true) or { panic(err) }
+	assert report.integrity == 'ok'
+	assert report.backup.ends_with('index.backup.db')
+	assert os.exists(report.backup)
+
+	mut backup := sqlite.open_readonly(report.backup) or { panic(err) }
+	rows := backup.query('SELECT COUNT(*) FROM items')!
+	assert rows.len == 1
+	assert rows[0].vals[0] == '2'
+	version := backup.query('PRAGMA user_version')!
+	assert version[0].vals[0] == '${latest_schema_version}'
+	backup.close()
+
+	// A second backup replaces the first one instead of failing.
+	again := store.doctor(backup: true) or { panic(err) }
+	assert again.backup == report.backup
+	assert store.count_items() == 2
+}
+
+fn test_doctor_compact_and_reindex() {
+	root := core_dir('doctor_compact')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	mut entries := []Entry{}
+	for name in ['a.txt', 'b.txt', 'c.txt'] {
+		file := os.join_path(root, name)
+		core_write(file, name)
+		entries << core_put(store, file, false)
+	}
+	// Delete one item so VACUUM has something to reclaim.
+	store.empty_entries([entries[0]]) or { panic(err) }
+	assert store.count_items() == 2
+	report := store.doctor(compact: true, reindex: true) or { panic(err) }
+	assert report.compacted
+	assert report.reindexed
+	assert store.count_items() == 2
+	check := store.doctor(integrity_check: true) or { panic(err) }
+	assert check.integrity == 'ok'
+}
+
+fn test_doctor_rebuild_from_payload() {
+	root := core_dir('doctor_rebuild')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	mut store := open(trash) or { panic(err) }
+	for name in ['a.txt', 'b.txt'] {
+		file := os.join_path(root, name)
+		core_write(file, name)
+		core_put(store, file, false)
+	}
+	index := store.index_path()
+	store.close()
+	os.rm(index) or { panic(err) }
+	os.rm('${index}-wal') or {}
+	os.rm('${index}-shm') or {}
+
+	reopened := open(trash) or { panic(err) }
+	assert reopened.count_items() == 0
+	report := reopened.doctor(rebuild: true) or { panic(err) }
+	assert report.rebuilt == 2
+	entries := reopened.list()
+	assert entries.len == 2
+	for entry in entries {
+		assert entry.original_path == ''
+		assert entry.state == .trashed
+	}
+	// A rebuilt item has no original path, so restore must refuse it.
+	mut failed := false
+	reopened.restore_entries([entries[0]]) or { failed = true }
+	assert failed
+	assert reopened.count_items() == 2
+	assert (os.read_file(reopened.payload_path(entries[0].id)) or { '' }) in ['a.txt', 'b.txt']
+}
+
+fn test_stats_excludes_broken_and_uses_trashed_at() {
+	root := core_dir('stats_times')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	for item in [
+		IndexItem{
+			id:            'id-new'
+			original_path: '/tmp/new'
+			trashed_at:    time.unix(2000)
+			kind:          .file
+			state:         .trashed
+		},
+		IndexItem{
+			id:            'id-old'
+			original_path: '/tmp/old'
+			trashed_at:    time.unix(1000)
+			kind:          .file
+			state:         .trashed
+		},
+	] {
+		os.mkdir_all(store.item_dir(item.id)) or { panic(err) }
+		core_write(store.data_path(item.id), 'x')
+		store.insert_item(item) or { panic(err) }
+	}
+	// A row without a payload is broken and must not inflate `items`.
+	store.insert_item(IndexItem{
+		id:            'id-broken'
+		original_path: '/tmp/broken'
+		trashed_at:    time.unix(500)
+		kind:          .file
+		state:         .trashed
+	}) or { panic(err) }
 
 	stats := store.stats()
+	assert stats.items == 2
+	assert stats.broken == 1
 	assert stats.unknown == 2
-	assert stats.size == 5
+	assert stats.oldest == time.unix(1000).format_rfc3339()
+	assert stats.newest == time.unix(2000).format_rfc3339()
+}
 
-	// A legacy directory size is measured from the payload on demand.
-	filled := store.fill_size(dir_entry)
-	assert filled.size_known
-	assert filled.size == 0
+fn test_doctor_repair_then_purge_keeps_repaired_item() {
+	root := core_dir('repair_purge')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	id := store.next_id()
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'payload')
+	store.insert_item(IndexItem{
+		id:            id
+		original_path: os.join_path(root, 'repaired.txt')
+		trashed_at:    time.now()
+		kind:          .file
+		state:         .pending
+	}) or { panic(err) }
+
+	report := store.doctor(repair: true, purge: true) or { panic(err) }
+	assert report.repaired == 1
+	assert report.purged == 0
+	assert report.broken == 0
+	assert (store.item_count() or { panic(err) }) == 1
+	assert (store.get_item(id) or { panic(err) }).state == .trashed
+	assert os.exists(store.data_path(id))
+}
+
+fn test_put_many_failure_reports_the_path() {
+	root := core_dir('put_failure_path')
+	defer {
+		core_cleanup(root)
+	}
+	dir := os.join_path(root, 'readonly')
+	os.mkdir_all(dir) or { panic(err) }
+	file := os.join_path(dir, 'a.txt')
+	core_write(file, 'x')
+	os.chmod(dir, 0o500) or { panic(err) }
+	defer {
+		os.chmod(dir, 0o700) or {}
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	batch := store.put_many([file]) or { panic(err) }
+	assert batch.failures.len == 1
+	assert batch.failures[0].subject == file
+	assert batch.failures[0].op == 'put'
+	assert os.exists(file)
+}
+
+fn test_recovery_warns_about_symlinked_item_dir() {
+	root := core_dir('recovery_symlink_warn')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	id := store.next_id()
+	outside := os.join_path(root, 'outside')
+	os.mkdir_all(outside) or { panic(err) }
+	os.symlink(outside, store.item_dir(id)) or { panic(err) }
+	store.insert_item(IndexItem{
+		id:            id
+		original_path: os.join_path(root, 'a.txt')
+		trashed_at:    time.now()
+		kind:          .file
+		state:         .pending
+	}) or { panic(err) }
+
+	report := store.recover() or { panic(err) }
+	assert report.recovered == 0
+	assert report.warnings.len == 1
+	assert report.warnings[0].contains(id)
+	assert (store.item_count() or { panic(err) }) == 1
+}
+
+fn test_copy_path_strips_setuid_bits() {
+	$if !windows {
+		root := core_dir('copy_setuid')
+		defer {
+			core_cleanup(root)
+		}
+		src := os.join_path(root, 'src')
+		dst := os.join_path(root, 'dst')
+		core_write(src, 'x')
+		os.chmod(src, 0o4755) or { panic(err) }
+		fsx.copy_path_sync(src, dst) or { panic(err) }
+		mode := (os.stat(dst) or { panic(err) }).mode & 0o7777
+		assert mode & 0o7000 == 0
+		assert mode & 0o777 == 0o755
+	}
+}
+
+fn test_reopen_preserves_existing_dir_mode() {
+	$if !windows {
+		root := core_dir('dir_mode')
+		defer {
+			core_cleanup(root)
+		}
+		store_path := os.join_path(root, 'trash')
+		store := open(store_path) or { panic(err) }
+		os.chmod(store.items_dir(), 0o750) or { panic(err) }
+		os.chmod(store.root, 0o750) or { panic(err) }
+		reopened := open(store_path) or { panic(err) }
+		assert (os.stat(reopened.items_dir()) or { panic(err) }).mode & 0o777 == 0o750
+		assert reopened.mode & 0o777 == 0o750
+	}
+}
+
+fn test_empty_all_recreates_items_with_store_mode() {
+	$if !windows {
+		root := core_dir('empty_mode')
+		defer {
+			core_cleanup(root)
+		}
+		store_path := os.join_path(root, 'trash')
+		store := open(store_path) or { panic(err) }
+		file := os.join_path(root, 'a.txt')
+		core_write(file, 'x')
+		core_put(store, file, false)
+		os.chmod(store.root, 0o750) or { panic(err) }
+		reopened := open(store_path) or { panic(err) }
+		reopened.empty_wait(false) or { panic(err) }
+		assert (os.stat(reopened.items_dir()) or { panic(err) }).mode & 0o777 == 0o750
+	}
+}
+
+fn test_gc_reports_unremovable_items_and_retries() {
+	$if !windows {
+		root := core_dir('gc_locked')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		garbage := os.join_path(store.gc_dir(), 'blocked')
+		core_write(garbage, 'x')
+		os.chmod(store.gc_dir(), 0o500) or { panic(err) }
+		mut failed := false
+		store.gc() or { failed = true }
+		assert failed
+		assert os.exists(garbage)
+
+		os.chmod(store.gc_dir(), 0o700) or { panic(err) }
+		store.gc() or { panic(err) }
+		assert !os.exists(garbage)
+	}
 }

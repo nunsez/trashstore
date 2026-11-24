@@ -1,7 +1,7 @@
 module trash
 
 import internal.fsx
-import json2
+import internal.sqlite
 import os
 import rand
 import time
@@ -20,13 +20,14 @@ pub struct StoreOptions {
 pub:
 	create              bool = true
 	mode                u32  = 0o700
-	sync                bool = true
 	allow_foreign_owner bool
-	id_gen              ?IdGen
-	clock               ?Clock
+	// allow_insecure permits a store that is writable by the group or others.
+	allow_insecure bool
+	id_gen         ?IdGen
+	clock          ?Clock
 }
 
-// RecoveryReport describes work done by recover()/recover_if_needed().
+// RecoveryReport describes what recover_if_needed() changed.
 pub struct RecoveryReport {
 pub mut:
 	recovered int
@@ -38,8 +39,9 @@ pub mut:
 pub struct Store {
 pub:
 	root string
-	sync bool
+	mode u32
 mut:
+	db         sqlite.Db
 	id_gen     ?IdGen
 	id_session &rand.UUIDSession = &rand.UUIDSession{}
 	clock      Clock             = time.now
@@ -78,8 +80,8 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 		if st.uid != os.geteuid() && os.geteuid() != 0 && !opts.allow_foreign_owner {
 			return permission_error('trash directory `${resolved}` is owned by uid ${st.uid}; use a directory owned by the current user')
 		}
-		if st.mode & 0o002 != 0 {
-			return invalid_target_error('trash directory `${resolved}` is world-writable; use a private subdirectory')
+		if st.mode & 0o022 != 0 && !opts.allow_insecure {
+			return invalid_target_error('trash directory `${resolved}` is writable by group or others (mode 0${st.mode & 0o777:o}); use mode 0700 or pass allow_insecure')
 		}
 	}
 	os.mkdir_all(resolved, mode: int(opts.mode)) or {
@@ -87,9 +89,10 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 			return context_error(.io, 'create trash directory', resolved, err)
 		}
 	}
+	actual_mode := if root_existed { os.stat(resolved)!.mode & 0o777 } else { opts.mode }
 	mut s := Store{
 		root:  resolved
-		sync:  opts.sync
+		mode:  actual_mode
 		clock: time.now
 	}
 	if gen := opts.id_gen {
@@ -107,8 +110,7 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 		fl.release()
 	}
 	mut created_any := !root_existed || !lock_existed
-	for dir in [os.join_path(resolved, items_dirname), os.join_path(resolved, inflight_dirname),
-		os.join_path(resolved, gc_dirname)] {
+	for dir in [os.join_path(resolved, items_dirname), os.join_path(resolved, gc_dirname)] {
 		if os.is_link(dir) {
 			return invalid_target_error('store directory `${dir}` must not be a symlink')
 		}
@@ -122,7 +124,14 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 				return context_error(.io, 'create store directory', dir, err)
 			}
 		}
-		os.chmod(dir, int(opts.mode)) or {}
+		if created {
+			os.chmod(dir, int(opts.mode)) or {}
+		}
+		// Re-check after mkdir/chmod: a component could have been swapped for a
+		// symlink between the first check and now.
+		if os.is_link(dir) {
+			return invalid_target_error('store directory `${dir}` must not be a symlink')
+		}
 		if created {
 			created_any = true
 		}
@@ -131,12 +140,13 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 		os.chmod(resolved, int(opts.mode)) or {}
 	}
 	os.chmod(s.lock_path(), 0o600) or {}
-	if created_any && s.sync {
+	if created_any {
 		fsx.fsync_dir(resolved)!
 		if !root_existed {
 			fsx.fsync_dir(os.dir(resolved))!
 		}
 	}
+	s.db = s.open_index()!
 	fl.release()
 	return s
 }
@@ -161,16 +171,22 @@ fn (s Store) item_dir(id string) string {
 	return os.join_path(s.items_dir(), id)
 }
 
-fn (s Store) meta_path(id string) string {
-	return os.join_path(s.item_dir(id), 'meta.json')
-}
-
 fn (s Store) data_path(id string) string {
 	return os.join_path(s.item_dir(id), 'data')
 }
 
 // payload_path returns the absolute path of an item's payload inside the store.
+// The id is not validated: use payload_path_checked when it comes from outside
+// the store (for example from a library caller).
 pub fn (s Store) payload_path(id string) string {
+	return s.data_path(id)
+}
+
+// payload_path_checked is payload_path with an id validation guard.
+pub fn (s Store) payload_path_checked(id string) !string {
+	if !is_safe_id(id) {
+		return invalid_target_error('invalid item id `${id}`')
+	}
 	return s.data_path(id)
 }
 
@@ -229,9 +245,7 @@ fn (s Store) try_lock_exclusive() ?StoreLock {
 }
 
 fn (s Store) sync_dir(path string) ! {
-	if s.sync {
-		fsx.fsync_dir(path)!
-	}
+	fsx.fsync_dir(path)!
 }
 
 fn failpoint(name string) ! {
@@ -256,108 +270,15 @@ fn unique_dirs(dirs []string) []string {
 	return result
 }
 
-fn (s Store) create_marker(op string, id string) !string {
-	return s.create_marker_opts(op, id, true)
-}
-
-fn (s Store) create_marker_opts(op string, id string, sync bool) !string {
-	if os.is_link(s.inflight_dir()) {
-		return invalid_target_error('inflight directory must not be a symlink')
-	}
-	path := os.join_path(s.inflight_dir(), '${op}-${id}')
-	os.mkdir(path, mode: 0o700)!
-	if sync {
-		s.sync_dir(s.inflight_dir())!
-	}
-	return path
-}
-
-fn (s Store) remove_marker(path string) {
-	s.remove_marker_opts(path, true)
-}
-
-fn (s Store) remove_marker_opts(path string, sync bool) {
-	fsx.remove_any(path) or {}
-	if sync {
-		s.sync_dir(s.inflight_dir()) or {}
-	}
-}
-
-fn (s Store) write_meta_atomic(item_dir string, meta Meta) ! {
-	return s.write_meta_atomic_opts(item_dir, meta, s.sync, s.sync)
-}
-
-fn (s Store) write_meta_atomic_opts(item_dir string, meta Meta, sync_file bool, sync_dir bool) ! {
-	text := json2.encode(meta, escape_unicode: true) + '\n'
-	tmp := os.join_path(item_dir, 'meta.json.tmp')
-	mut f := os.create(tmp)!
-	f.write_string(text) or {
-		f.close()
-		os.rm(tmp) or {}
-		return err
-	}
-	f.flush()
-	if s.sync && sync_file {
-		fsx.fsync_fd(f.fd, tmp) or {
-			f.close()
-			os.rm(tmp) or {}
-			return err
-		}
-	}
-	f.close()
-	os.rename(tmp, os.join_path(item_dir, 'meta.json')) or {
-		os.rm(tmp) or {}
-		return err
-	}
-	if sync_dir {
-		s.sync_dir(item_dir)!
-	}
-}
-
-fn (s Store) read_meta_unchecked(id string) !Meta {
-	path := s.meta_path(id)
-	text := os.read_file(path) or {
-		return context_error(.io, 'read metadata', path, err)
-	}
-	return json2.decode[Meta](text) or {
-		return context_error(.io, 'decode metadata', path, err)
-	}
-}
-
-fn (s Store) read_meta_raw(id string) !Meta {
-	meta := s.read_meta_unchecked(id)!
-	if meta.id != id {
-		return io_error('metadata id mismatch for `${id}`: found `${meta.id}`')
-	}
-	return meta
-}
-
-fn (s Store) read_meta(id string) !Meta {
-	meta := s.read_meta_raw(id)!
-	meta.to_entry() or {
-		return io_error('invalid metadata for `${id}`: ${err.msg()}')
-	}
-	return meta
-}
-
-// read_entry parses and validates metadata exactly once.
-fn (s Store) read_entry(id string) !Entry {
-	meta := s.read_meta_raw(id)!
-	return meta.to_entry() or {
-		return io_error('invalid metadata for `${id}`: ${err.msg()}')
-	}
-}
-
-fn (s Store) write_meta(id string, meta Meta) ! {
-	s.write_meta_atomic(s.item_dir(id), meta)!
-}
-
-// recover_if_needed runs recovery only when in-flight markers or garbage exist.
+// recover_if_needed runs recovery only when pending rows or garbage exist.
 // It returns an empty report if another process is already handling recovery.
+// recover_if_needed runs recovery when there is work to do. If another process
+// holds the exclusive lock, recovery is deferred: the report is empty and the
+// lock holder (or the next run) finishes it.
 pub fn (s Store) recover_if_needed() !RecoveryReport {
-	inflight := os.ls(s.inflight_dir()) or { []string{} }
+	pending := s.pending_items() or { []IndexItem{} }
 	garbage := os.ls(s.gc_dir()) or { []string{} }
-	if inflight.len == 0 && garbage.len == 0 {
+	if pending.len == 0 && garbage.len == 0 {
 		return RecoveryReport{}
 	}
 	mut fl := s.try_lock_exclusive() or { return RecoveryReport{} }
@@ -381,140 +302,107 @@ pub fn (s Store) recover() !RecoveryReport {
 }
 
 fn (s Store) recover_locked() !RecoveryReport {
-	if os.is_link(s.inflight_dir()) {
-		return invalid_target_error('inflight directory `${s.inflight_dir()}` must not be a symlink')
-	}
 	mut report := RecoveryReport{}
-	markers := os.ls(s.inflight_dir()) or { []string{} }
-	for name in markers {
-		marker := os.join_path(s.inflight_dir(), name)
-		idx := name.index('-') or {
-			report.warnings << 'removed malformed marker `${name}`'
-			s.remove_marker(marker)
+	for item in s.pending_items()! {
+		if os.is_link(s.item_dir(item.id)) {
+			report.warnings << 'item ${item.id}: item directory is a symlink; left for doctor'
 			continue
 		}
-		op := name[..idx]
-		id := name[idx + 1..]
-		if !is_safe_id(id) {
-			report.warnings << 'removed unsafe marker `${name}`'
-			s.remove_marker(marker)
-			continue
+		match item.state {
+			.pending {
+				s.recover_put(item)!
+				report.recovered++
+			}
+			.restoring {
+				s.recover_restore(item)!
+				report.recovered++
+			}
+			.pending_empty {
+				s.recover_empty(item)!
+				report.recovered++
+			}
+			else {}
 		}
-		match op {
-			'put' {
-				s.recover_put(id)!
-				report.recovered++
-			}
-			'restore' {
-				s.recover_restore(id)!
-				report.recovered++
-			}
-			'empty' {
-				s.recover_empty(id)!
-				report.recovered++
-			}
-			'size' {
-				// An interrupted size measurement leaves the item valid; the size
-				// is measured again on demand.
-			}
-			else {
-				report.warnings << 'removed unknown marker `${name}`'
-			}
-		}
-		s.remove_marker(marker)
 	}
 	return report
 }
 
 fn is_safe_id(id string) bool {
 	return id != '' && id != '.' && id != '..' && !id.contains('/') && !id.contains('\\')
+		&& !id.contains('\x00')
 }
 
-fn (s Store) recover_put(id string) ! {
-	item := s.item_dir(id)
-	if os.is_link(item) || !os.is_dir(item) {
+fn (s Store) remove_item_dir_if_empty(id string) ! {
+	dir := s.item_dir(id)
+	if os.is_link(dir) {
+		// Never follow a symlinked item directory.
 		return
 	}
-	mut meta := s.read_meta(id) or {
-		// Keep an orphaned payload for manual recovery if the metadata is gone.
-		if !os.exists(s.data_path(id)) && !os.is_link(s.data_path(id)) {
-			os.rmdir_all(item)!
-			s.sync_dir(s.items_dir())!
-		}
-		return
-	}
-	if meta.state != 'pending' {
-		return
-	}
-	if os.exists(s.data_path(id)) || os.is_link(s.data_path(id)) {
-		meta.state = 'trashed'
-		s.write_meta(id, meta)!
-	} else {
-		os.rmdir_all(item)!
+	if os.is_dir(dir) {
+		os.rmdir_all(dir)!
 		s.sync_dir(s.items_dir())!
 	}
 }
 
-fn (s Store) recover_restore(id string) ! {
-	item := s.item_dir(id)
-	if os.is_link(item) || !os.is_dir(item) {
+fn (s Store) recover_put(item IndexItem) ! {
+	if os.is_link(s.item_dir(item.id)) {
 		return
 	}
-	mut meta := s.read_meta(id) or {
-		// Keep an orphaned payload for manual recovery if the metadata is gone.
-		if !os.exists(s.data_path(id)) && !os.is_link(s.data_path(id)) {
-			os.rmdir_all(item)!
-			s.sync_dir(s.items_dir())!
-		}
+	if os.exists(s.data_path(item.id)) || os.is_link(s.data_path(item.id)) {
+		s.set_item_state(item.id, .trashed)!
 		return
 	}
-	if meta.state != 'restoring' {
+	s.delete_item(item.id)!
+	s.remove_item_dir_if_empty(item.id)!
+}
+
+fn (s Store) recover_restore(item IndexItem) ! {
+	if os.is_link(s.item_dir(item.id)) {
 		return
 	}
-	mut target_path := ''
-	if meta.restore_to != '' {
-		if target := percent_decode_path(meta.restore_to) {
-			target_path = target
-			fsx.remove_any('${target}.trash-tmp-${id}') or {}
-		}
-	}
-	if target_path != '' {
-		if target_st := os.lstat(target_path) {
-			same_inode := (meta.data_ino != 0 && target_st.dev == meta.data_dev
-				&& target_st.inode == meta.data_ino)
-				|| (meta.target_ino != 0 && target_st.dev == meta.target_dev
-					&& target_st.inode == meta.target_ino)
-			if same_inode {
-				// The rename completed before the crash; the target is our
-				// payload, so finish the restore instead of duplicating it.
-				os.rmdir_all(item)!
-				s.sync_dir(s.items_dir())!
-				return
+	if item.restore_to != '' {
+		target := percent_decode_path(item.restore_to) or { '' }
+		if target != '' {
+			fsx.remove_any('${target}.trash-tmp-${item.id}') or {}
+			if os.exists(target) || os.is_link(target) {
+				if restore_target_matches(item, target) {
+					// The rename completed before the crash; the target is our
+					// payload, so finish the restore instead of duplicating it.
+					s.delete_item(item.id)!
+					s.remove_item_dir_if_empty(item.id)!
+					return
+				}
 			}
 		}
 	}
-	if os.exists(s.data_path(id)) || os.is_link(s.data_path(id)) {
-		meta.state = 'trashed'
-		meta.restore_to = ''
-		s.write_meta(id, meta)!
+	if os.exists(s.data_path(item.id)) || os.is_link(s.data_path(item.id)) {
+		mut restored := item
+		restored.state = .trashed
+		restored.restore_to = ''
+		restored.target_dev = 0
+		restored.target_ino = 0
+		s.update_item(restored)!
 	} else {
-		os.rmdir_all(item)!
-		s.sync_dir(s.items_dir())!
+		s.delete_item(item.id)!
+		s.remove_item_dir_if_empty(item.id)!
 	}
 }
 
-fn (s Store) recover_empty(id string) ! {
-	if os.is_link(s.gc_dir()) {
-		return invalid_target_error('garbage directory must not be a symlink')
-	}
-	item := s.item_dir(id)
-	if os.is_link(item) || !os.is_dir(item) {
+fn (s Store) recover_empty(item IndexItem) ! {
+	dir := s.item_dir(item.id)
+	if os.is_link(dir) {
 		return
 	}
-	dest := os.join_path(s.gc_dir(), '${id}-recovered-${s.next_id()}')
-	fsx.rename_noreplace(item, dest)!
-	s.sync_dir(s.items_dir())!
-	s.sync_dir(s.gc_dir())!
+	if os.is_dir(dir) {
+		if os.is_link(s.gc_dir()) {
+			return invalid_target_error('garbage directory must not be a symlink')
+		}
+		dest := os.join_path(s.gc_dir(), '${item.id}-recovered-${s.next_id()}')
+		fsx.rename_noreplace(dir, dest)!
+		s.sync_dir(s.items_dir())!
+		s.sync_dir(s.gc_dir())!
+	}
+	s.delete_item(item.id)!
 }
 
 // gc removes garbage left by completed or interrupted destructive operations.
@@ -531,33 +419,38 @@ fn (s Store) gc_locked() ! {
 		return invalid_target_error('garbage directory `${s.gc_dir()}` must not be a symlink')
 	}
 	entries := os.ls(s.gc_dir()) or { []string{} }
+	mut failures := []string{}
 	for entry in entries {
 		path := os.join_path(s.gc_dir(), entry)
 		if !os.exists(path) && !os.is_link(path) {
 			continue
 		}
-		fsx.remove_any(path)!
-	}
-	s.sync_dir(s.gc_dir())!
-}
-
-// count_items returns the number of item directories currently in the store.
-pub fn (s Store) count_items() int {
-	ids := os.ls(s.items_dir()) or { return 0 }
-	mut count := 0
-	for id in ids {
-		if os.is_dir(s.item_dir(id)) {
-			count++
+		fsx.remove_any(path) or {
+			failures << '${entry}: ${err.msg()}'
+			continue
 		}
 	}
-	return count
+	s.sync_dir(s.gc_dir())!
+	if failures.len > 0 {
+		return io_error('could not remove ${failures.len} garbage item(s): ${failures.join('; ')}')
+	}
+}
+
+// count_items returns the number of rows in the index.
+pub fn (s Store) count_items() int {
+	return int(s.item_count() or { 0 })
 }
 
 @[params]
 pub struct DoctorOptions {
 pub:
-	repair bool
-	purge  bool
+	repair          bool
+	purge           bool
+	integrity_check bool
+	compact         bool
+	backup          bool
+	rebuild         bool
+	reindex         bool
 }
 
 pub struct DoctorItem {
@@ -569,113 +462,74 @@ pub:
 
 pub struct DoctorReport {
 pub mut:
-	broken   int
-	repaired int
-	purged   int
-	sized    int
-	unknown  int
-	items    []DoctorItem
+	broken    int
+	repaired  int
+	purged    int
+	sized     int
+	unknown   int
+	integrity string
+	backup    string
+	rebuilt   int
+	compacted bool
+	reindexed bool
+	items     []DoctorItem
 }
 
-fn (s Store) repair_broken_meta(id string) string {
-	data := s.data_path(id)
-	has_data := os.exists(data) || os.is_link(data)
-	mut fixed := Meta{}
-	mut changed := false
-	if meta := s.read_meta_unchecked(id) {
-		fixed = meta
-		if fixed.id != id {
-			fixed.id = id
-			changed = true
-		}
-		if has_data {
-			if fixed.state != 'trashed' {
-				fixed.state = 'trashed'
-				fixed.restore_to = ''
-				changed = true
-			}
-			if _ := kind_from_label(fixed.kind) {
-			} else {
-				fixed.kind = detect_kind(data).label()
-				changed = true
-			}
-			mut path_ok := false
-			if decoded := percent_decode_path(fixed.original_path) {
-				path_ok = decoded.starts_with('/')
-			}
-			if !path_ok {
-				fixed.original_path = percent_encode_path(os.join_path(s.root, 'recovered', id))
-				changed = true
-			}
-			if _ := time.parse_rfc3339(fixed.trashed_at) {
-			} else {
-				fixed.trashed_at = s.clock().format_rfc3339()
-				changed = true
-			}
-			if !fixed.size_known {
-				if kind := kind_from_label(fixed.kind) {
-					size, ok := measure_path(data, kind)
-					if ok {
-						fixed.size = size
-						fixed.size_known = true
-						changed = true
-					}
-				}
-			}
-		} else {
-			changed = false
-		}
-	} else if has_data {
-		kind := detect_kind(data)
-		size, size_ok := measure_path(data, kind)
-		fixed = Meta{
-			id:            id
-			state:         'trashed'
-			original_path: percent_encode_path(os.join_path(s.root, 'recovered', id))
-			trashed_at:    s.clock().format_rfc3339()
-			kind:          kind.label()
-			size:          size
-			size_known:    size_ok
-		}
-		changed = true
-	}
-	if !changed {
-		return 'not repairable'
-	}
-	fixed.to_entry() or { return 'not repairable' }
-	s.write_meta(id, fixed) or { return 'repair failed' }
-	return 'repaired'
-}
-
-// doctor inspects broken items under an exclusive lock and optionally repairs
-// metadata or detaches broken items into the garbage directory.
+// doctor inspects broken items under an exclusive lock and optionally recovers
+// pending operations or detaches broken items into the garbage directory.
 pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
+	if os.is_link(s.gc_dir()) {
+		return invalid_target_error('garbage directory `${s.gc_dir()}` must not be a symlink')
+	}
+	if os.is_link(s.items_dir()) {
+		return invalid_target_error('items directory `${s.items_dir()}` must not be a symlink')
+	}
 	mut fl := s.lock_exclusive()!
 	defer {
 		fl.release()
 	}
-	scan := s.scan()
-	mut report := DoctorReport{
-		broken: scan.broken.len
+	mut report := DoctorReport{}
+	if opts.rebuild {
+		report.rebuilt = s.rebuild_index_locked()!
 	}
+	if opts.reindex {
+		s.reindex_locked()!
+		report.reindexed = true
+	}
+	if opts.repair {
+		recovery := s.recover_locked()!
+		report.repaired = recovery.recovered
+	}
+	if opts.compact {
+		s.compact_locked()!
+		report.compacted = true
+	}
+	if opts.integrity_check {
+		report.integrity = s.integrity_check_locked()!
+	}
+	if opts.backup {
+		report.backup = s.backup_locked()!
+	}
+	scan := s.scan()
+	report.broken = scan.broken.len
 	for broken in scan.broken {
 		mut action := 'reported'
-		if opts.repair && is_safe_id(broken.id) {
-			action = s.repair_broken_meta(broken.id)
-			if action == 'repaired' {
-				report.repaired++
-			}
-		}
-		if opts.purge && is_safe_id(broken.id) {
-			dest := os.join_path(s.gc_dir(), 'doctor-${broken.id}-${s.next_id()}')
-			fsx.rename_noreplace(s.item_dir(broken.id), dest) or {
-				action = 'purge failed'
+		if !is_safe_id(broken.id) || os.is_link(s.item_dir(broken.id)) {
+			// A symlinked item directory is evidence of tampering: report it and
+			// leave it for the user instead of following or silently removing it.
+			action = 'skipped: symlinked item'
+		} else if opts.purge {
+			s.delete_item(broken.id) or {}
+			dir := s.item_dir(broken.id)
+			if os.is_dir(dir) {
+				dest := os.join_path(s.gc_dir(), 'doctor-${broken.id}-${s.next_id()}')
+				fsx.rename_noreplace(dir, dest) or { action = 'purge failed' }
 			}
 			if action != 'purge failed' {
-				s.sync_dir(s.items_dir()) or {}
-				s.sync_dir(s.gc_dir()) or {}
 				action = 'purged'
 				report.purged++
+				s.sync_dir(s.items_dir())!
+				s.sync_dir(s.gc_dir())!
 			}
 		}
 		report.items << DoctorItem{

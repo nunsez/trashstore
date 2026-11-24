@@ -6,3 +6,9 @@
 *.vsh linguist-language=V
 v.mod linguist-language=V
 .vdocignore linguist-language=ignore
+
+# Vendored SQLite amalgamation: keep it out of diffs and language stats, and
+# do not let git normalise the C sources.
+thirdparty/sqlite/* linguist-vendored -diff
+thirdparty/sqlite/*.c -text
+thirdparty/sqlite/*.h -text

@@ -21,6 +21,7 @@ ci: fmt vet test
 	v -prod test .
 	v -prod -o /tmp/trash ./cmd/trash
 	./scripts/concurrency_test.sh /tmp/trash
+	./scripts/stress_test.sh /tmp/trash
 	./scripts/cross_device_test.sh /tmp/trash
 
 clean:

@@ -10,10 +10,8 @@ pub enum ErrorKind {
 	not_restorable
 	io
 	permission
-	conflict
-	not_empty
 	unsupported
-	unsupported_fs
+	schema_mismatch
 }
 
 // TrashError is the typed error returned by public Store operations.
@@ -95,4 +93,13 @@ pub fn io_error(msg string) TrashError {
 // unsupported_error reports an unsupported operation.
 pub fn unsupported_error(msg string) TrashError {
 	return trash_error(.unsupported, msg)
+}
+
+// schema_mismatch_error reports an index written by an incompatible version.
+pub fn schema_mismatch_error(msg string, path string) TrashError {
+	return TrashError{
+		kind: .schema_mismatch
+		msg:  msg
+		path: path
+	}
 }

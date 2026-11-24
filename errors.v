@@ -37,6 +37,6 @@ fn io_error(msg string) TrashError {
 	return errs.io_error(msg)
 }
 
-fn unsupported_error(msg string) TrashError {
-	return errs.unsupported_error(msg)
+fn schema_mismatch_error(msg string, path string) TrashError {
+	return errs.schema_mismatch_error(msg, path)
 }

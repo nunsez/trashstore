@@ -70,8 +70,9 @@ pub fn resolve_selection(entries []Entry, opts SelectionOptions) ![]Entry {
 
 struct RefResolution {
 mut:
-	entries []Entry
-	failed  int
+	entries  []Entry
+	warnings []string
+	failed   int
 }
 
 // resolve_refs resolves targets in argument order. Within one target the

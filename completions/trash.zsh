@@ -17,7 +17,8 @@ _trash() {
     _arguments -C \
         '--store[use PATH as the trash store]:path:_files -/' \
         '--verbose[explain what is happening]' \
-        '--no-color[disable colours]' '--no-sync[disable fsync durability]' \
+        '--no-color[disable colours]' \
+        '--reset-store[wipe the store if the index schema is incompatible]' \
         '(-h --help)'{-h,--help}'[show help]' \
         '(-V --version)'{-V,--version}'[show version]' \
         '1:command:->command' \
@@ -67,7 +68,7 @@ _trash() {
                     _arguments '--json[JSON output]'
                     ;;
                 doctor)
-                    _arguments '--repair[repair metadata]' '--doctor-purge[remove broken items]' '--json[JSON output]'
+                    _arguments '--repair[finish interrupted operations and measure sizes]' '--doctor-purge[remove broken items]' '--integrity-check[run integrity_check]' '--compact[VACUUM the index]' '--backup[write index.backup.db]' '--rebuild[rebuild rows from payloads]' '--reindex[rebuild index b-trees]' '--json[JSON output]'
                     ;;
                 put|*)
                     _arguments '(-r --recursive)'{-r,--recursive}'[allow directories]' \
