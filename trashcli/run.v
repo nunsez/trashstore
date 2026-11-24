@@ -98,37 +98,45 @@ pub fn run(cli Cli) ! {
 			run_put(mut set, cli)!
 		}
 		.list {
-			cwd := pathx.canonical_path(os.getwd())
+			cwd := current_dir()!
 			set.open_for_read(cli, cwd)!
 			run_list(mut set, cli, cwd)!
 		}
 		.restore {
-			cwd := pathx.canonical_path(os.getwd())
+			cwd := current_dir()!
 			set.open_for_read(cli, cwd)!
 			run_restore(mut set, cli, cwd)!
 		}
 		.empty {
-			cwd := pathx.canonical_path(os.getwd())
+			cwd := current_dir()!
 			set.open_for_read(cli, cwd)!
 			run_empty(mut set, cli, cwd)!
 		}
 		.where {
-			cwd := pathx.canonical_path(os.getwd())
+			cwd := current_dir()!
 			set.open_for_read(cli, cwd)!
 			run_where(mut set, cli)!
 		}
 		.stats {
-			cwd := pathx.canonical_path(os.getwd())
+			cwd := current_dir()!
 			set.open_for_read(cli, cwd)!
 			run_stats(mut set, cli)!
 		}
 		.doctor {
-			cwd := pathx.canonical_path(os.getwd())
+			cwd := current_dir()!
 			set.open_for_read(cli, cwd)!
 			run_doctor(mut set, cli)!
 		}
 		.help, .version {}
 	}
+}
+
+fn current_dir() !string {
+	cwd := os.getwd()
+	if cwd == '' {
+		return error('cannot determine the current directory; use an absolute path or change to a valid directory')
+	}
+	return pathx.canonical_path(cwd)
 }
 
 fn run_put(mut set StoreSet, cli Cli) ! {

@@ -8,6 +8,9 @@ const percent_hex = '0123456789ABCDEF'
 // canonical_path resolves symlinks in every existing component of `path`.
 // Unlike os.real_path it also works when the path itself does not exist yet.
 pub fn canonical_path(path string) string {
+	if path == '' {
+		return ''
+	}
 	abs := os.abs_path(path)
 	resolved := os.real_path(abs)
 	if resolved != abs || os.exists(abs) || os.is_link(abs) {
@@ -23,6 +26,9 @@ pub fn canonical_path(path string) string {
 // canonical_target_path canonicalises the parent of `path` but keeps the final
 // component as is, so symlinks themselves are moved/restored instead of their targets.
 pub fn canonical_target_path(path string) string {
+	if path == '' {
+		return ''
+	}
 	abs := os.abs_path(path)
 	name := os.file_name(abs)
 	if name == '' {
