@@ -230,7 +230,7 @@ fn test_open_rejects_group_or_world_writable_store() {
 	open(trash) or { panic(err) }
 }
 
-// regression: P0-3 — library mode must not bypass allow_insecure.
+// regression: library mode must not bypass allow_insecure.
 fn test_open_validates_store_options_mode() {
 	root := core_dir('opt_mode')
 	defer {
@@ -250,7 +250,7 @@ fn test_open_validates_store_options_mode() {
 	assert (os.stat(insecure.gc_dir()) or { panic(err) }).mode & 0o777 == 0o770
 }
 
-// regression: P0-3 — index and its SQLite sidecars must be owner-only.
+// regression: index and its SQLite sidecars must be owner-only.
 fn test_index_files_are_private() {
 	$if !windows {
 		root := core_dir('index_perm')
@@ -1451,7 +1451,7 @@ fn test_recover_restore_removes_stale_tmp() {
 	assert store.entry(entry.id)!.state == .trashed
 }
 
-// regression: P0-1 — recovery never removes a temp path it did not create.
+// regression: recovery never removes a temp path it did not create.
 fn test_recover_restore_keeps_foreign_tmp_without_marker() {
 	root := core_dir('recover_tmp_foreign')
 	defer {
@@ -2137,7 +2137,7 @@ fn test_gc_reports_unremovable_items_and_retries() {
 	}
 }
 
-// regression: P0-4 — a garbage item that cannot be removed is reported as a
+// regression: a garbage item that cannot be removed is reported as a
 // warning and does not block normal commands.
 fn test_gc_failure_is_a_warning_not_fatal() {
 	root := core_dir('gc_warning')
@@ -2166,7 +2166,7 @@ fn test_gc_failure_is_a_warning_not_fatal() {
 	assert !os.exists(garbage)
 }
 
-// regression: P0-4 — recovery keeps processing items after one of them fails.
+// regression: recovery keeps processing items after one of them fails.
 fn test_recovery_continues_after_item_error() {
 	$if !windows {
 		root := core_dir('recover_continue')
@@ -2198,7 +2198,7 @@ fn test_recovery_continues_after_item_error() {
 	}
 }
 
-// regression: P0-6 — an unknown on-disk state is broken, never pending_empty.
+// regression: an unknown on-disk state is broken, never pending_empty.
 fn test_unknown_index_state_is_broken_not_pending_empty() {
 	root := core_dir('unknown_state')
 	defer {
@@ -2233,7 +2233,7 @@ fn test_unknown_index_state_is_broken_not_pending_empty() {
 	assert store.get_item(id)!.state == .unknown
 }
 
-// regression: P0-1 — ids read from the index are never turned into paths.
+// regression: ids read from the index are never turned into paths.
 fn test_scan_and_recovery_reject_unsafe_index_ids() {
 	root := core_dir('unsafe_index_ids')
 	defer {
@@ -2261,7 +2261,7 @@ fn test_scan_and_recovery_reject_unsafe_index_ids() {
 	assert store.pending_items()!.len == 3
 }
 
-// regression: P0-1 — a relative restore_to is not trusted by recovery.
+// regression: a relative restore_to is not trusted by recovery.
 fn test_recovery_rejects_relative_restore_to() {
 	root := core_dir('restore_to_relative')
 	defer {
@@ -2288,7 +2288,7 @@ fn test_recovery_rejects_relative_restore_to() {
 	assert (os.read_file(store.data_path(id)) or { '' }) == 'x'
 }
 
-// regression: P0-1 — an unnormalised restore_to is not trusted by recovery.
+// regression: an unnormalised restore_to is not trusted by recovery.
 fn test_recovery_rejects_unnormalised_restore_to() {
 	root := core_dir('restore_to_unnormalised')
 	defer {
@@ -2314,7 +2314,7 @@ fn test_recovery_rejects_unnormalised_restore_to() {
 	assert store.get_item(id)!.state == .trashed
 }
 
-// regression: P0-1 — public lookups reject unsafe ids before SQL/paths.
+// regression: public lookups reject unsafe ids before SQL/paths.
 fn test_get_item_rejects_unsafe_id() {
 	root := core_dir('get_unsafe_id')
 	defer {
@@ -2328,7 +2328,7 @@ fn test_get_item_rejects_unsafe_id() {
 	}
 }
 
-// regression: P0-1 — fill_size never measures a path built from an unsafe id.
+// regression: fill_size never measures a path built from an unsafe id.
 fn test_fill_size_ignores_unsafe_id() {
 	root := core_dir('fill_unsafe_id')
 	defer {
@@ -2346,7 +2346,7 @@ fn test_fill_size_ignores_unsafe_id() {
 	assert got.size == 0
 }
 
-// regression: P0-1 — doctor reports an unsafe id but never purges it.
+// regression: doctor reports an unsafe id but never purges it.
 fn test_doctor_does_not_purge_invalid_id() {
 	root := core_dir('doctor_invalid_id')
 	defer {
@@ -2365,7 +2365,7 @@ fn test_doctor_does_not_purge_invalid_id() {
 	assert store.all_items()!.len == 1
 }
 
-// regression: P0-5 — a failed rename must leave both the row and the payload.
+// regression: a failed rename must leave both the row and the payload.
 fn test_doctor_purge_rename_failure_keeps_row_and_payload() {
 	root := core_dir('doctor_purge_rename_fail')
 	defer {
@@ -2393,7 +2393,7 @@ fn test_doctor_purge_rename_failure_keeps_row_and_payload() {
 	assert (os.read_file(blocker) or { '' }) == 'blocker'
 }
 
-// regression: P0-5 — a failed delete must not count the item as purged; the
+// regression: a failed delete must not count the item as purged; the
 // payload is already in .gc and must remain readable.
 fn test_doctor_purge_delete_failure_keeps_payload() {
 	root := core_dir('doctor_purge_delete_fail')
@@ -2428,7 +2428,7 @@ fn test_doctor_purge_delete_failure_keeps_payload() {
 	assert (os.read_file(os.join_path(moved, 'data')) or { '' }) == 'precious'
 }
 
-// regression: P0-5 / P1-9 — an unsafe generated id must not move anything.
+// regression: an unsafe generated id must not move anything.
 fn test_doctor_purge_rejects_unsafe_generated_id() {
 	root := core_dir('doctor_purge_unsafe_id')
 	defer {
