@@ -35,37 +35,51 @@ fn selection_options(cli Cli, cwd string) SelectionOptions {
 	}
 }
 
-// resolve_selection builds the common item set used by list, restore and empty.
-// Items are ordered newest first unless --sort changes the order.
-pub fn resolve_selection(entries []Entry, opts SelectionOptions) ![]Entry {
+// SizeFiller measures the entries whose size is still unknown. The CLI passes
+// a Store-backed filler; pure callers can use identity_sizes.
+pub type SizeFiller = fn (entries []Entry) []Entry
+
+fn identity_sizes(entries []Entry) []Entry {
+	return entries
+}
+
+// select applies the shared selection pipeline used by list, restore and empty:
+// resolve refs -> scope -> keep -> predicates -> size -> sort -> limit. Sizes
+// are measured only after predicates and only when sorting by size, and always
+// before the limit so `--limit 1 --sort size` returns the largest match.
+pub fn select(entries []Entry, opts SelectionOptions, fill SizeFiller) ![]Entry {
 	if opts.all && opts.targets.len > 0 {
 		return error('--all cannot be combined with targets')
 	}
 	if opts.all && opts.recursive {
 		return error('--all and --recursive cannot be combined')
 	}
-	mut base := if opts.targets.len > 0 {
+	base := if opts.targets.len > 0 {
 		collect_targets(entries, opts.targets, opts.recursive)!
 	} else {
-		filter_entries(entries,
-			cwd:       if opts.all { '' } else { opts.cwd }
-			recursive: opts.recursive
-			all:       opts.all
-		)
+		filter_scope(entries, opts.cwd, opts.recursive, opts.all)
 	}
 	// --keep protects the newest N items of the base set before filters run,
 	// so retention never deletes the newest items even when a filter matches.
-	if opts.keep > 0 {
-		base = if base.len > opts.keep { base[opts.keep..] } else { []Entry{} }
+	kept := if opts.keep > 0 {
+		if base.len > opts.keep { base[opts.keep..] } else { []Entry{} }
+	} else {
+		base
 	}
-	return filter_entries(base,
+	filtered := filter_criteria(kept, ListFilter{
 		all:                true
 		kind:               opts.kind
 		grep:               opts.grep
 		older_than_seconds: opts.older_than_seconds
-		sort:               opts.sort
-		limit:              opts.limit
-	)
+	})
+	measured := if opts.sort == 'size' { fill(filtered) } else { filtered }
+	return limit_entries(sort_entries(measured, opts.sort), opts.limit)
+}
+
+// resolve_selection is the store-less variant of select, kept for callers that
+// already have sizes (or do not sort by size).
+pub fn resolve_selection(entries []Entry, opts SelectionOptions) ![]Entry {
+	return select(entries, opts, identity_sizes)
 }
 
 struct RefResolution {

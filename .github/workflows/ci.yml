@@ -84,7 +84,7 @@ jobs:
           mkdir -p "dist/${name}/completions"
           v -prod -o trash ./cmd/trash
           cp trash "dist/${name}/"
-          cp trash.1 LICENSE README.md CHANGELOG.md "dist/${name}/"
+          cp trash.1 LICENSE README.md "dist/${name}/"
           cp completions/* "dist/${name}/completions/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           rm -rf "dist/${name}"

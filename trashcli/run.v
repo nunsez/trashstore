@@ -162,38 +162,12 @@ fn run_list(store Store, cli Cli) ! {
 }
 
 // select_entries resolves the common selection used by list, restore and empty.
-// Sorting by size measures every candidate first, because sizes are filled
-// lazily and would otherwise all sort as zero.
+// The store-backed filler measures sizes lazily, before sorting and limiting.
 fn select_entries(store Store, entries []Entry, cli Cli, cwd string) ![]Entry {
-	if cli.sort == 'size' {
-		return size_ordered_selection(store, entries, cli, cwd)
+	fill := fn [store] (candidates []Entry) []Entry {
+		return store.fill_sizes(candidates)
 	}
-	return resolve_selection(entries, selection_options(cli, cwd))
-}
-
-// size_ordered_selection resolves the selection and measures every candidate
-// before applying --sort size.
-fn size_ordered_selection(store Store, entries []Entry, cli Cli, cwd string) ![]Entry {
-	opts := selection_options(cli, cwd)
-	candidates := resolve_selection(entries, SelectionOptions{
-		targets:            opts.targets
-		all:                opts.all
-		recursive:          opts.recursive
-		kind:               opts.kind
-		grep:               opts.grep
-		older_than_seconds: opts.older_than_seconds
-		keep:               opts.keep
-		cwd:                opts.cwd
-	})!
-	measured := store.fill_sizes(candidates)
-	return filter_entries(measured, ListFilter{
-		all:                true
-		kind:               opts.kind
-		grep:               opts.grep
-		older_than_seconds: opts.older_than_seconds
-		sort:               opts.sort
-		limit:              opts.limit
-	})
+	return select(entries, selection_options(cli, cwd), fill)
 }
 
 fn run_restore(store Store, cli Cli) ! {
@@ -422,7 +396,7 @@ fn run_where(store Store, cli Cli) ! {
 	for warning in resolution.warnings {
 		eprintln(cli.palette().red('warning:') + ' ' + warning)
 	}
-	selected := filter_entries(resolution.entries, ListFilter{
+	selected := filter_criteria(resolution.entries, ListFilter{
 		all:                true
 		kind:               cli.kind
 		grep:               cli.grep

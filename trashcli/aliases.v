@@ -45,6 +45,22 @@ fn filter_entries(entries []Entry, filter ListFilter) []Entry {
 	return trash.filter_entries(entries, filter)
 }
 
+fn filter_scope(entries []Entry, cwd string, recursive bool, all bool) []Entry {
+	return trash.filter_scope(entries, cwd, recursive, all)
+}
+
+fn filter_criteria(entries []Entry, filter ListFilter) []Entry {
+	return trash.filter_criteria(entries, filter)
+}
+
+fn sort_entries(entries []Entry, sort string) []Entry {
+	return trash.sort_entries(entries, sort)
+}
+
+fn limit_entries(entries []Entry, limit int) []Entry {
+	return trash.limit_entries(entries, limit)
+}
+
 fn find_in(entries []Entry, ref string) ![]Entry {
 	return trash.find_in(entries, ref)
 }

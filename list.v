@@ -114,26 +114,37 @@ pub fn (s Store) scan() ScanResult {
 	return result
 }
 
-// filter_entries applies cwd/recursive/limit filtering to an already scanned list.
-pub fn filter_entries(entries []Entry, filter ListFilter) []Entry {
+// filter_scope keeps the entries trashed from cwd, or from its subtree when
+// recursive is set. all (or an empty cwd) disables the scope stage.
+pub fn filter_scope(entries []Entry, cwd string, recursive bool, all bool) []Entry {
+	if cwd == '' || all {
+		return entries.clone()
+	}
+	base := canonical_path(cwd)
 	mut result := []Entry{}
-	cwd := canonical_path(filter.cwd)
+	for entry in entries {
+		matches := if recursive {
+			is_path_within(entry.original_path, base)
+		} else {
+			os.dir(entry.original_path) == base
+		}
+		if matches {
+			result << entry
+		}
+	}
+	return result
+}
+
+// filter_criteria applies kind/grep/age predicates. Scope, ordering and the
+// limit are separate stages; this keeps the pipeline order explicit.
+pub fn filter_criteria(entries []Entry, filter ListFilter) []Entry {
 	cutoff := if filter.older_than_seconds > 0 {
 		time.now().unix() - filter.older_than_seconds
 	} else {
 		i64(0)
 	}
+	mut result := []Entry{}
 	for entry in entries {
-		if filter.cwd != '' && !filter.all {
-			matches := if filter.recursive {
-				is_path_within(entry.original_path, cwd)
-			} else {
-				os.dir(entry.original_path) == cwd
-			}
-			if !matches {
-				continue
-			}
-		}
 		if filter.kind != '' && entry.kind.label() != filter.kind {
 			continue
 		}
@@ -145,35 +156,47 @@ pub fn filter_entries(entries []Entry, filter ListFilter) []Entry {
 		}
 		result << entry
 	}
-	match filter.sort {
+	return result
+}
+
+// sort_entries orders entries by the requested key. An empty or unknown key
+// preserves the incoming order (newest first for a fresh scan).
+pub fn sort_entries(entries []Entry, sort string) []Entry {
+	mut result := entries.clone()
+	match sort {
 		'size' { result.sort(a.size > b.size) }
 		'path' { result.sort(a.original_path < b.original_path) }
 		'kind' { result.sort(a.kind.label() < b.kind.label()) }
 		else {}
 	}
-	if filter.limit > 0 && result.len > filter.limit {
-		return result[..filter.limit]
-	}
 	return result
+}
+
+// limit_entries truncates the list after ordering. A non-positive limit keeps
+// every entry.
+pub fn limit_entries(entries []Entry, limit int) []Entry {
+	if limit > 0 && entries.len > limit {
+		return entries[..limit]
+	}
+	return entries
+}
+
+// filter_entries applies scope, predicates, ordering and the limit in that
+// order to an already scanned list.
+pub fn filter_entries(entries []Entry, filter ListFilter) []Entry {
+	scoped := filter_scope(entries, filter.cwd, filter.recursive, filter.all)
+	filtered := filter_criteria(scoped, filter)
+	return limit_entries(sort_entries(filtered, filter.sort), filter.limit)
 }
 
 // list returns trashed items, optionally limited to the current directory or
 // its subtree. Ordering by size measures every candidate first, because sizes
 // are filled lazily.
 pub fn (s Store) list(filter ListFilter) []Entry {
-	entries := s.scan().entries
-	if filter.sort != 'size' {
-		return filter_entries(entries, filter)
-	}
-	candidates := filter_entries(entries, ListFilter{
-		cwd:                filter.cwd
-		recursive:          filter.recursive
-		all:                filter.all
-		kind:               filter.kind
-		grep:               filter.grep
-		older_than_seconds: filter.older_than_seconds
-	})
-	return filter_entries(s.fill_sizes(candidates), filter)
+	scoped := filter_scope(s.scan().entries, filter.cwd, filter.recursive, filter.all)
+	filtered := filter_criteria(scoped, filter)
+	measured := if filter.sort == 'size' { s.fill_sizes(filtered) } else { filtered }
+	return limit_entries(sort_entries(measured, filter.sort), filter.limit)
 }
 
 // find_in resolves an item by full id, short id (as shown by `trash list`),

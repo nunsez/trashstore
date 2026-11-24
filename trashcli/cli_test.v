@@ -668,6 +668,157 @@ fn test_resolve_selection_recursive_target() {
 	assert selected[0].original_path == canonical_target_path(file)
 }
 
+fn test_select_pipeline_stage_order() {
+	entries := table_test_entries()
+	by_path := select(entries, SelectionOptions{
+		all:  true
+		sort: 'path'
+	}, identity_sizes)!
+	assert by_path.len == 3
+	assert by_path.map(it.original_path) == ['/tmp/t/build', '/tmp/t/notes/old.md', '/tmp/t/report.txt']
+
+	// Scope runs before predicates: a cwd only matches its own entries. The
+	// table paths are not canonicalized, so build a scoped set from a real root.
+	root := canonical_path('/tmp/t')
+	scoped_entries := [
+		Entry{
+			id:            'a'
+			original_path: os.join_path(root, 'report.txt')
+			trashed_at:    time.now()
+			kind:          .file
+			state:         .trashed
+		},
+		Entry{
+			id:            'b'
+			original_path: os.join_path(root, 'notes', 'old.md')
+			trashed_at:    time.now()
+			kind:          .file
+			state:         .trashed
+		},
+	]
+	scoped := select(scoped_entries, SelectionOptions{ cwd: os.join_path(root, 'notes') },
+		identity_sizes)!
+	assert scoped.len == 1
+	assert scoped[0].original_path == os.join_path(root, 'notes', 'old.md')
+
+	// --keep drops the newest N items before filters and the limit.
+	kept := select(entries, SelectionOptions{
+		all:   true
+		keep:  1
+		sort:  'path'
+		limit: 1
+	}, identity_sizes)!
+	assert kept.len == 1
+	assert kept[0].original_path == '/tmp/t/build'
+
+	// Predicates are applied independently of scope and ordering.
+	filtered := select(entries, SelectionOptions{
+		all:                true
+		kind:               'file'
+		grep:               'notes'
+		older_than_seconds: 24 * 3600
+	}, identity_sizes)!
+	assert filtered.len == 1
+	assert filtered[0].original_path == '/tmp/t/notes/old.md'
+
+	// The limit is applied after ordering, not before.
+	limited := select(entries, SelectionOptions{
+		all:   true
+		sort:  'path'
+		limit: 1
+	}, identity_sizes)!
+	assert limited.len == 1
+	assert limited[0].original_path == '/tmp/t/build'
+}
+
+struct FillLog {
+mut:
+	paths []string
+}
+
+fn test_select_measures_sizes_after_filters_and_before_sorting() {
+	entries := table_test_entries()
+	mut log := &FillLog{}
+	fill := fn [mut log] (candidates []Entry) []Entry {
+		mut measured := []Entry{cap: candidates.len}
+		for entry in candidates {
+			log.paths << entry.original_path
+			mut sized := entry
+			sized.size_known = true
+			sized.size = match entry.original_path {
+				'/tmp/t/report.txt' { u64(100) }
+				'/tmp/t/build' { u64(300) }
+				else { u64(50) }
+			}
+			measured << sized
+		}
+		return measured
+	}
+	selected := select(entries, SelectionOptions{
+		all:   true
+		sort:  'size'
+		limit: 1
+	}, fill)!
+	assert selected.len == 1
+	assert selected[0].original_path == '/tmp/t/build'
+	// Sizes are measured before the limit, so every candidate is measured.
+	assert log.paths.len == 3
+
+	mut file_log := &FillLog{}
+	file_fill := fn [mut file_log] (candidates []Entry) []Entry {
+		mut measured := []Entry{cap: candidates.len}
+		for entry in candidates {
+			file_log.paths << entry.original_path
+			mut sized := entry
+			sized.size_known = true
+			sized.size = if entry.original_path == '/tmp/t/report.txt' { u64(100) } else { u64(50) }
+			measured << sized
+		}
+		return measured
+	}
+	files := select(entries, SelectionOptions{
+		all:   true
+		kind:  'file'
+		sort:  'size'
+		limit: 1
+	}, file_fill)!
+	assert files.len == 1
+	assert files[0].original_path == '/tmp/t/report.txt'
+	// The directory is filtered out before measurement, so it is never sized.
+	assert file_log.paths.len == 2
+	assert '/tmp/t/build' !in file_log.paths
+}
+
+fn test_select_matches_resolve_selection() {
+	entries := table_test_entries()
+	options := [
+		SelectionOptions{
+			all: true
+		},
+		SelectionOptions{
+			cwd: '/tmp/t/notes'
+		},
+		SelectionOptions{
+			all:   true
+			kind:  'file'
+			sort:  'path'
+			limit: 2
+		},
+		SelectionOptions{
+			all:  true
+			keep: 1
+		},
+	]
+	for opts in options {
+		from_select := select(entries, opts, identity_sizes)!
+		from_resolve := resolve_selection(entries, opts)!
+		assert from_select.len == from_resolve.len
+		for i in 0 .. from_select.len {
+			assert from_select[i].id == from_resolve[i].id
+		}
+	}
+}
+
 fn table_test_entries() []Entry {
 	now := time.now()
 	return [
