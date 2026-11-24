@@ -216,7 +216,7 @@ fn test_open_rejects_group_or_world_writable_store() {
 	trash := os.join_path(root, 'trash')
 	os.mkdir_all(trash) or { panic(err) }
 
-	for mode in [0o770, 0o777, 0o702] {
+	for mode in [0o770, 0o777, 0o702, 0o755, 0o750, 0o705] {
 		os.chmod(trash, mode) or { panic(err) }
 		mut failed := false
 		open(trash) or { failed = true }
@@ -228,6 +228,48 @@ fn test_open_rejects_group_or_world_writable_store() {
 
 	os.chmod(trash, 0o700) or { panic(err) }
 	open(trash) or { panic(err) }
+}
+
+// regression: P0-3 — library mode must not bypass allow_insecure.
+fn test_open_validates_store_options_mode() {
+	root := core_dir('opt_mode')
+	defer {
+		core_cleanup(root)
+	}
+	trash := os.join_path(root, 'trash')
+	for mode in [0o777, 0o755, 0o750, 0o1700] {
+		mut failed := false
+		open_with(trash, mode: mode) or { failed = true }
+		assert failed, 'mode 0${mode:o} must be rejected'
+		assert !os.exists(trash), 'rejected mode 0${mode:o} must not create the store'
+	}
+	os.mkdir_all(trash) or { panic(err) }
+	os.chmod(trash, 0o700) or { panic(err) }
+	insecure := open_with(trash, mode: 0o770, allow_insecure: true) or { panic(err) }
+	assert (os.stat(insecure.items_dir()) or { panic(err) }).mode & 0o777 == 0o770
+	assert (os.stat(insecure.gc_dir()) or { panic(err) }).mode & 0o777 == 0o770
+}
+
+// regression: P0-3 — index and its SQLite sidecars must be owner-only.
+fn test_index_files_are_private() {
+	$if !windows {
+		root := core_dir('index_perm')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		file := os.join_path(root, 'a.txt')
+		core_write(file, 'x')
+		core_put(store, file, false)
+		for path in [store.index_path(), '${store.index_path()}-wal', '${store.index_path()}-shm'] {
+			if os.exists(path) {
+				assert (os.stat(path) or { panic(err) }).mode & 0o777 == 0o600, '${path} must be 0600'
+			}
+		}
+		assert (os.stat(store.index_path()) or { panic(err) }).mode & 0o777 == 0o600
+		report := store.doctor(backup: true) or { panic(err) }
+		assert (os.stat(report.backup) or { panic(err) }).mode & 0o777 == 0o600
+	}
 }
 
 // regression: S4 — an unsafe Entry.id used to rename the whole items/ tree.
@@ -340,6 +382,7 @@ fn test_index_rejects_foreign_database_and_garbage() {
 	}
 	trash := os.join_path(root, 'trash')
 	os.mkdir_all(trash) or { panic(err) }
+	os.chmod(trash, 0o700) or { panic(err) }
 	mut db := sqlite.open(os.join_path(trash, 'index.db'))!
 	db.exec('CREATE TABLE t (x INTEGER)')!
 	db.close()
@@ -367,6 +410,7 @@ fn test_index_rejects_symlink() {
 	}
 	trash := os.join_path(root, 'trash')
 	os.mkdir_all(trash) or { panic(err) }
+	os.chmod(trash, 0o700) or { panic(err) }
 	outside := os.join_path(root, 'outside.db')
 	os.write_file(outside, '') or { panic(err) }
 	os.symlink(outside, os.join_path(trash, 'index.db')) or { panic(err) }
@@ -799,6 +843,7 @@ fn test_open_rejects_symlinked_store_dirs() {
 		os.mkdir_all(outside) or { panic(err) }
 		trash := os.join_path(root, 'trash')
 		os.mkdir_all(trash) or { panic(err) }
+		os.chmod(trash, 0o700) or { panic(err) }
 		os.symlink(outside, os.join_path(trash, dirname)) or { panic(err) }
 		mut failed := false
 		open(trash) or { failed = true }
@@ -2027,7 +2072,7 @@ fn test_copy_path_strips_setuid_bits() {
 	}
 }
 
-fn test_reopen_preserves_existing_dir_mode() {
+fn test_reopen_rejects_group_accessible_store_dirs() {
 	$if !windows {
 		root := core_dir('dir_mode')
 		defer {
@@ -2036,10 +2081,17 @@ fn test_reopen_preserves_existing_dir_mode() {
 		store_path := os.join_path(root, 'trash')
 		store := open(store_path) or { panic(err) }
 		os.chmod(store.items_dir(), 0o750) or { panic(err) }
+		mut failed := false
+		open(store_path) or { failed = true }
+		assert failed, 'group-accessible items/ must be rejected'
+		os.chmod(store.items_dir(), 0o700) or { panic(err) }
 		os.chmod(store.root, 0o750) or { panic(err) }
+		failed = false
+		open(store_path) or { failed = true }
+		assert failed, 'group-accessible store root must be rejected'
+		os.chmod(store.root, 0o700) or { panic(err) }
 		reopened := open(store_path) or { panic(err) }
-		assert (os.stat(reopened.items_dir()) or { panic(err) }).mode & 0o777 == 0o750
-		assert reopened.mode & 0o777 == 0o750
+		assert reopened.mode & 0o777 == 0o700
 	}
 }
 

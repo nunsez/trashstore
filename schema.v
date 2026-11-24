@@ -150,6 +150,18 @@ fn map_index_error(err IError, path string) IError {
 	return err
 }
 
+// secure_index_files restricts the index and its SQLite sidecar files to the
+// owner. SQLite creates them with the process umask, which is usually 0644.
+fn (s Store) secure_index_files() {
+	for name in [index_filename, '${index_filename}-wal', '${index_filename}-shm'] {
+		path := os.join_path(s.root, name)
+		if os.is_link(path) || !os.exists(path) {
+			continue
+		}
+		os.chmod(path, 0o600) or {}
+	}
+}
+
 // open_index opens index.db, applies connection pragmas and pending migrations.
 fn (s Store) open_index() !sqlite.Db {
 	path := s.index_path()
@@ -160,6 +172,7 @@ fn (s Store) open_index() !sqlite.Db {
 		return invalid_target_error('index path `${path}` is not a regular file')
 	}
 	mut db := sqlite.open(path) or { return map_index_error(err, path) }
+	s.secure_index_files()
 	s.prepare_index(mut db) or {
 		db.close()
 		return map_index_error(err, path)
@@ -168,6 +181,7 @@ fn (s Store) open_index() !sqlite.Db {
 		db.close()
 		return map_index_error(err, path)
 	}
+	s.secure_index_files()
 	return db
 }
 

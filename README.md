@@ -207,9 +207,12 @@ opened with `allow_insecure: true`; the CLI never does that.
 
 The store is private by design:
 
-- It must be owned by the current user and must not be writable by the group or
-  others (mode `0700`). `open` rejects `0770`/`0777` stores; the library can opt
-  in with `allow_insecure: true`.
+- It must be owned by the current user and must not be accessible by the
+  group or others (mode `0700`). `open` rejects any store mode with group or
+  other bits (`0750`, `0755`, `0770`, ...); the library can opt in with
+  `allow_insecure: true`, the CLI never does that.
+- `index.db`, its `-wal`/`-shm` sidecars and `index.backup.db` are restricted to
+  `0600` when the store is opened or a backup is written.
 - `items/`, `.gc/` and the lock file must be real files and
   directories, never symlinks. A symlinked item directory is reported as broken
   and is never repaired, restored, or purged through.

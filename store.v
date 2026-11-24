@@ -67,6 +67,12 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 	if root.trim_space() == '' {
 		return invalid_target_error('trash directory path must not be empty')
 	}
+	if opts.mode > 0o777 {
+		return invalid_target_error('store mode 0${opts.mode:o} is invalid; use a mode within 0700')
+	}
+	if opts.mode & 0o077 != 0 && !opts.allow_insecure {
+		return invalid_target_error('store mode 0${opts.mode:o} is accessible by group or others; use mode 0700 or pass allow_insecure')
+	}
 	resolved := canonical_path(root)
 	if resolved == '/' {
 		return invalid_target_error('refusing to use the filesystem root as the trash directory')
@@ -80,8 +86,8 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 		if st.uid != os.geteuid() && os.geteuid() != 0 && !opts.allow_foreign_owner {
 			return permission_error('trash directory `${resolved}` is owned by uid ${st.uid}; use a directory owned by the current user')
 		}
-		if st.mode & 0o022 != 0 && !opts.allow_insecure {
-			return invalid_target_error('trash directory `${resolved}` is writable by group or others (mode 0${st.mode & 0o777:o}); use mode 0700 or pass allow_insecure')
+		if st.mode & 0o077 != 0 && !opts.allow_insecure {
+			return invalid_target_error('trash directory `${resolved}` is accessible by group or others (mode 0${st.mode & 0o777:o}); use mode 0700 or pass allow_insecure')
 		}
 	}
 	os.mkdir_all(resolved, mode: int(opts.mode)) or {
@@ -126,6 +132,11 @@ pub fn open_with(root string, opts StoreOptions) !Store {
 		}
 		if created {
 			os.chmod(dir, int(opts.mode)) or {}
+		} else if !opts.allow_insecure {
+			mode := os.stat(dir)!.mode & 0o777
+			if mode & 0o077 != 0 {
+				return invalid_target_error('store directory `${dir}` is accessible by group or others (mode 0${mode:o}); use mode 0700 or pass allow_insecure')
+			}
 		}
 		// Re-check after mkdir/chmod: a component could have been swapped for a
 		// symlink between the first check and now.

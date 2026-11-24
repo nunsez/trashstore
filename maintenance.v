@@ -101,7 +101,9 @@ fn (s Store) backup_locked() !string {
 	// Build the snapshot next to the old one and swap it in, so a failed
 	// VACUUM does not destroy the previous backup.
 	s.db.exec('VACUUM INTO ${sql_quote(tmp)}')!
+	os.chmod(tmp, 0o600)!
 	os.mv(tmp, path)!
+	os.chmod(path, 0o600)!
 	fsx.fsync_dir(s.root)!
 	return path
 }

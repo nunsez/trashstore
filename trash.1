@@ -205,7 +205,8 @@ the table sums only the known sizes and reports how many items are unknown.
 Use \fBtrash doctor --repair\fR to measure every unknown item at once.
 .SH SECURITY
 \fBtrash\fR keeps its store private: it must be owned by the current user and
-must not be writable by the group or others (mode 0700). \fBitems/\fR,
+must not be accessible by the group or others (mode 0700). \fBindex.db\fR, its
+WAL/SHM sidecars and \fBindex.backup.db\fR are restricted to 0600. \fBitems/\fR,
 \fB.gc/\fR and the lock file must be real files and
 directories, never symlinks; a symlinked item is reported as broken and is not
 repaired, restored, or purged through. \fBput\fR and \fBrestore\fR walk the
