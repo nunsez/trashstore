@@ -132,7 +132,7 @@ fn test_resolve_store_uses_xdg_data_home() {
 			os.setenv('XDG_DATA_HOME', old_xdg, true)
 		}
 	}
-	assert (resolve_store('') or { panic(err) }) == pathx.canonical_path(os.join_path(xdg, 'trash'))
+	assert (resolve_store('') or { panic(err) }) == pathx.canonical_path(os.join_path(xdg, 'trashstore'))
 }
 
 fn test_parse_finds_command_after_global_flags() {

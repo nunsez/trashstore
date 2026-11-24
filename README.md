@@ -22,6 +22,8 @@ non-interactive `Store` API.
 - `list --ids` prints one full id per line, so `trash list ... --ids | trash
   where` locates a filtered selection without parsing a table.
 - Batch operations keep successful results and report per-item failures.
+- Per-volume stores: files on another filesystem go to `<mount>/.trashstore-$uid`
+  instead of being copied into the home store.
 - `--json` and `--yes` for scripting.
 - `doctor` finds and optionally repairs broken items.
 
@@ -136,10 +138,18 @@ was lost; original paths are not stored anywhere else, so rebuilt items have no
 original path and cannot be restored in place (use `trash where <id>` to find
 the payload).
 
-The default store is `$XDG_DATA_HOME/trash`, falling back to
-`~/.local/share/trash`. Override it with `--store` or `$TRASH_STORE`; `--store`
-may appear before or after the command. Run `trash help <command>` for
-command-specific flags.
+The default home store is `$XDG_DATA_HOME/trashstore`, falling back to
+`~/.local/share/trashstore`. Override it with `--store` or `$TRASH_STORE`;
+`--store` may appear before or after the command. Run `trash help <command>`
+for command-specific flags.
+
+When a target lives on a different filesystem than the home store, `put` uses a
+per-volume store at `<mount>/.trashstore-$uid`. Volume stores are registered in
+`<home-store>/volumes`; `list --all`, `restore --all`, `empty --all`, `where`,
+`stats`, and `doctor` scan every registered store, as do `restore` and `empty`
+with explicit ids. Scope-based commands (`list`, `restore`, `empty` without
+`--all`) scan the home store and the store of the current directory. `--store` and `$TRASH_STORE` force a single store and
+disable per-volume stores.
 
 ## JSON output
 
@@ -151,8 +161,8 @@ exit status. The main shapes are:
 - `restore` → `{ id, original_path, restored_to }[]`
 - `empty` → `{ emptied }`
 - `where` → `{ id, location }[]`
-- `stats` → `{ root, items, broken, size, unknown, oldest, newest }`
-- `doctor` → `{ broken, repaired, purged, sized, unknown, integrity, backup, rebuilt, compacted, reindexed, items: [{ id, reason, action }] }`
+- `stats` → `{ root, roots: [{ root, items, broken, size, unknown, oldest, newest }], items, broken, size, unknown, oldest, newest }`
+- `doctor` → `{ roots: [{ root, report: { broken, repaired, purged, sized, unknown, integrity, backup, rebuilt, compacted, reindexed, items: [{ id, reason, action }] } }], broken, repaired, purged, sized, unknown, rebuilt, compacted, reindexed }`
 
 `size` is only meaningful when `size_known` is true; `stats` reports the total
 of the known sizes and the number of items whose size was not measured yet.

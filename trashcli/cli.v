@@ -1,7 +1,5 @@
 module trashcli
 
-import internal.pathx
-import os
 import strconv
 
 pub enum Command {
@@ -332,26 +330,6 @@ fn (cli Cli) validate(table FlagTable) ! {
 // palette returns terminal colours for this invocation.
 pub fn (cli Cli) palette() Palette {
 	return new_palette(cli.no_color)
-}
-
-// resolve_store resolves --store / $TRASH_STORE / $XDG_DATA_HOME / ~/.local/share/trash.
-pub fn resolve_store(cli_path string) !string {
-	if cli_path != '' {
-		return pathx.canonical_path(cli_path)
-	}
-	env_store := os.getenv('TRASH_STORE')
-	if env_store != '' {
-		return pathx.canonical_path(env_store)
-	}
-	xdg_data := os.getenv('XDG_DATA_HOME')
-	if xdg_data != '' {
-		return pathx.canonical_path(os.join_path(xdg_data, 'trash'))
-	}
-	home := os.home_dir()
-	if home != '' {
-		return pathx.canonical_path(os.join_path(home, '.local', 'share', 'trash'))
-	}
-	return error('cannot determine home directory; pass --store')
 }
 
 fn parse_duration(value string) !i64 {

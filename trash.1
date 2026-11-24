@@ -20,6 +20,14 @@ The first non-flag argument is always a command: to trash a file named
 current directory by default, its subtree with \fB-r\fR, or the whole trash
 with \fB--all\fR. Targets, filters, sorting, limits, and interactive selection
 apply to all three commands in the same way.
+.PP
+Files on a different filesystem than the home store are moved to a per-volume
+store at \fB<mount>/.trashstore-<uid>\fR. \fBlist --all\fR, \fBrestore --all\fR,
+\fBempty --all\fR, \fBwhere\fR, \fBstats\fR, and \fBdoctor\fR scan every
+registered volume store, as do \fBrestore\fR and \fBempty\fR with explicit ids.
+Scope-based commands scan the home store and the store of the current
+directory. An explicit \fB--store\fR or \fB$TRASH_STORE\fR disables
+per-volume stores.
 .SH COMMANDS
 .TP
 .B put
@@ -72,7 +80,8 @@ Show the program version.
 .TP
 .B \-\-store \fIPATH\fR
 Use \fIPATH\fR as the trash store. Defaults to \fB$TRASH_STORE\fR,
-\fB$XDG_DATA_HOME/trash\fR, or \fB~/.local/share/trash\fR.
+\fB$XDG_DATA_HOME/trashstore\fR, or \fB~/.local/share/trashstore\fR.
+An explicit store disables per-volume stores.
 .TP
 .B \-r, \-\-recursive
 Required to trash a directory. With \fBlist\fR, \fBrestore\fR,
@@ -232,13 +241,18 @@ Items being permanently deleted.
 .TP
 .B .lock
 Advisory lock for destructive operations.
+.TP
+.B volumes
+Registry of per-volume stores used by \fBlist --all\fR, \fBwhere\fR,
+\fBstats\fR, \fBdoctor\fR, and the \fB--all\fR and id-based forms of
+\fBrestore\fR and \fBempty\fR.
 .SH ENVIRONMENT
 .TP
 .B TRASH_STORE
 Default trash store.
 .TP
 .B XDG_DATA_HOME
-Used to derive \fB$XDG_DATA_HOME/trash\fR.
+Used to derive \fB$XDG_DATA_HOME/trashstore\fR.
 .TP
 .B NO_COLOR
 Disable colours when set.

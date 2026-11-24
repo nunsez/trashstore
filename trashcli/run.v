@@ -11,8 +11,20 @@ struct EmptyReport {
 	emptied int
 }
 
-struct StatsReport {
+struct StatsRootReport {
 	root    string
+	items   int
+	broken  int
+	size    u64
+	unknown int
+	oldest  string
+	newest  string
+}
+
+struct StatsReport {
+mut:
+	root    string
+	roots   []StatsRootReport
 	items   int
 	broken  int
 	size    u64
@@ -25,6 +37,29 @@ struct RestorePlan {
 	id            string
 	original_path string
 	restored_to   string
+}
+
+struct DoctorStoreReport {
+	root   string
+	report trash.DoctorReport
+}
+
+struct DoctorAllReport {
+mut:
+	roots     []DoctorStoreReport
+	broken    int
+	repaired  int
+	purged    int
+	sized     int
+	unknown   int
+	rebuilt   int
+	compacted bool
+	reindexed bool
+}
+
+struct PutPlan {
+	target string
+	store  TargetStore
 }
 
 // run executes the parsed command.
@@ -53,91 +88,139 @@ pub fn run(cli Cli) ! {
 		}
 	}
 
-	store_path := resolve_store(cli.store)!
-	mut store := open_store_or_reset(store_path, cli)!
+	spec := resolve_store_spec(cli.store)!
+	mut set := new_store_set(cli, spec)!
 	defer {
-		store.close()
+		set.close()
 	}
-	recovery := store.recover_if_needed()!
-	for warning in recovery.warnings {
-		eprintln(cli.palette().red('warning:') + ' ' + warning)
-	}
-	if recovery.recovered > 0 && cli.verbose {
-		eprintln('Recovered ${recovery.recovered} interrupted trash operation(s).')
-	}
-
 	match cli.command {
-		.put { run_put(store, cli)! }
-		.list { run_list(store, cli)! }
-		.restore { run_restore(store, cli)! }
-		.empty { run_empty(store, cli)! }
-		.where { run_where(store, cli)! }
-		.stats { run_stats(store, cli)! }
-		.doctor { run_doctor(store, cli)! }
+		.put {
+			run_put(mut set, cli)!
+		}
+		.list {
+			cwd := pathx.canonical_path(os.getwd())
+			set.open_for_read(cli, cwd)!
+			run_list(mut set, cli, cwd)!
+		}
+		.restore {
+			cwd := pathx.canonical_path(os.getwd())
+			set.open_for_read(cli, cwd)!
+			run_restore(mut set, cli, cwd)!
+		}
+		.empty {
+			cwd := pathx.canonical_path(os.getwd())
+			set.open_for_read(cli, cwd)!
+			run_empty(mut set, cli, cwd)!
+		}
+		.where {
+			cwd := pathx.canonical_path(os.getwd())
+			set.open_for_read(cli, cwd)!
+			run_where(mut set, cli)!
+		}
+		.stats {
+			cwd := pathx.canonical_path(os.getwd())
+			set.open_for_read(cli, cwd)!
+			run_stats(mut set, cli)!
+		}
+		.doctor {
+			cwd := pathx.canonical_path(os.getwd())
+			set.open_for_read(cli, cwd)!
+			run_doctor(mut set, cli)!
+		}
 		.help, .version {}
 	}
 }
 
-fn warn_broken(broken []trash.BrokenItem, cli Cli) {
-	p := cli.palette()
-	for item in broken {
-		eprintln(p.red('warning:') + ' broken trash item ${format.short_id(item.id)}: ${item.reason}')
-	}
-}
-
-fn run_put(store trash.Store, cli Cli) ! {
+fn run_put(mut set StoreSet, cli Cli) ! {
 	interactive := cli.preview || cli.interactive
-	if !interactive {
-		batch := store.put_many(cli.targets, recursive: cli.recursive)!
-		if cli.verbose {
-			for entry in batch.entries {
+	if interactive && !cli.yes && os.is_atty(0) == 0 {
+		return error('-i/--interactive requires a terminal; use --yes to skip the prompt')
+	}
+	mut plans := []PutPlan{}
+	mut failures := []string{}
+	for target in cli.targets {
+		if cli.force && !os.exists(target) && !os.is_link(target) {
+			continue
+		}
+		chosen := set.target_store(target, cli) or {
+			if cli.force && err is trash.TrashError && err.kind == .not_found {
+				continue
+			}
+			failures << 'Failed to trash ${target}: ${err.msg()}'
+			continue
+		}
+		plans << PutPlan{
+			target: target
+			store:  chosen
+		}
+	}
+	if interactive {
+		mut registered := map[string]bool{}
+		for plan in plans {
+			store := set.stores[plan.store.root] or {
+				failures << 'Failed to trash ${plan.target}: store `${plan.store.root}` is not open'
+				continue
+			}
+			planned := store.plan_put(plan.target, recursive: cli.recursive) or {
+				if cli.force && err is trash.TrashError && err.kind == .not_found {
+					continue
+				}
+				failures << 'Failed to trash ${plan.target}: ${err.msg()}'
+				continue
+			}
+			print_preview_info(planned.original_path)
+			if !cli.yes {
+				ans := os.input('Send ${planned.original_path} to the trash? (y/n) ').trim_space().to_lower()
+				if ans != 'y' && ans != 'yes' {
+					continue
+				}
+			}
+			entry := store.put(plan.target, recursive: cli.recursive) or {
+				if cli.force && err is trash.TrashError && err.kind == .not_found {
+					continue
+				}
+				failures << 'Failed to trash ${plan.target}: ${err.msg()}'
+				continue
+			}
+			if !registered[plan.store.root] {
+				set.register_target(plan.store, cli)
+				registered[plan.store.root] = true
+			}
+			if cli.verbose {
 				println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
 			}
 		}
-		if batch.failures.len > 0 {
-			mut failures := []string{}
+	} else {
+		mut order := []string{}
+		mut groups := map[string][]PutPlan{}
+		for plan in plans {
+			if plan.store.root !in groups {
+				order << plan.store.root
+			}
+			groups[plan.store.root] << plan
+		}
+		for root in order {
+			store := set.stores[root] or {
+				failures << 'Failed to trash: store `${root}` is not open'
+				continue
+			}
+			mut targets := []string{cap: groups[root].len}
+			for plan in groups[root] {
+				targets << plan.target
+			}
+			batch := store.put_many(targets, recursive: cli.recursive)!
+			if cli.verbose {
+				for entry in batch.entries {
+					println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
+				}
+			}
 			for failure in batch.failures {
 				if cli.force && failure.kind == .not_found {
 					continue
 				}
 				failures << 'Failed to trash ${failure.subject}: ${failure.message}'
 			}
-			if failures.len > 0 {
-				return error(failures.join('\n'))
-			}
-		}
-		return
-	}
-	if interactive && !cli.yes && os.is_atty(0) == 0 {
-		return error('-i/--interactive requires a terminal; use --yes to skip the prompt')
-	}
-	mut failures := []string{}
-	for target in cli.targets {
-		planned := store.plan_put(target, recursive: cli.recursive) or {
-			if cli.force && err is trash.TrashError && err.kind == .not_found {
-				continue
-			}
-			failures << 'Failed to trash ${target}: ${err.msg()}'
-			continue
-		}
-		if interactive {
-			print_preview_info(planned.original_path)
-		}
-		if interactive && !cli.yes {
-			ans := os.input('Send ${planned.original_path} to the trash? (y/n) ').trim_space().to_lower()
-			if ans != 'y' && ans != 'yes' {
-				continue
-			}
-		}
-		entry := store.put(target, recursive: cli.recursive) or {
-			if cli.force && err is trash.TrashError && err.kind == .not_found {
-				continue
-			}
-			failures << 'Failed to trash ${target}: ${err.msg()}'
-			continue
-		}
-		if cli.verbose {
-			println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
+			set.register_target(groups[root][0].store, cli)
 		}
 	}
 	if failures.len > 0 {
@@ -145,11 +228,10 @@ fn run_put(store trash.Store, cli Cli) ! {
 	}
 }
 
-fn run_list(store trash.Store, cli Cli) ! {
-	scan := store.scan()
-	warn_broken(scan.broken, cli)
-	cwd := pathx.canonical_path(os.getwd())
-	mut entries := select_entries(store, scan.entries, cli, cwd)!
+fn run_list(mut set StoreSet, cli Cli, cwd string) ! {
+	scan := set.scan_all(cli)
+	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
+	mut entries := select_entries(&set, scan, cli, cwd)!
 	if cli.ids {
 		for entry in entries {
 			println(entry.id)
@@ -157,7 +239,7 @@ fn run_list(store trash.Store, cli Cli) ! {
 		return
 	}
 	if !cli.no_size {
-		entries = store.fill_sizes(entries)
+		entries = fill_sizes(&set, scan.roots, entries)
 	}
 	if cli.json {
 		println(json2.encode(json_entries(entries), escape_unicode: true))
@@ -176,18 +258,18 @@ fn run_list(store trash.Store, cli Cli) ! {
 
 // select_entries resolves the common selection used by list, restore and empty.
 // The store-backed filler measures sizes lazily, before sorting and limiting.
-fn select_entries(store trash.Store, entries []trash.Entry, cli Cli, cwd string) ![]trash.Entry {
-	fill := fn [store] (candidates []trash.Entry) []trash.Entry {
-		return store.fill_sizes(candidates)
+fn select_entries(set &StoreSet, scan ScanAll, cli Cli, cwd string) ![]trash.Entry {
+	roots := scan.roots
+	fill := fn [set, roots] (candidates []trash.Entry) []trash.Entry {
+		return fill_sizes(set, roots, candidates)
 	}
-	return select(entries, selection_options(cli, cwd), fill)
+	return select(scan.entries, selection_options(cli, cwd), fill)
 }
 
-fn run_restore(store trash.Store, cli Cli) ! {
-	scan := store.scan()
-	warn_broken(scan.broken, cli)
-	cwd := pathx.canonical_path(os.getwd())
-	mut selected := select_entries(store, scan.entries, cli, cwd)!
+fn run_restore(mut set StoreSet, cli Cli, cwd string) ! {
+	scan := set.scan_all(cli)
+	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
+	mut selected := select_entries(&set, scan, cli, cwd)!
 	if selected.len == 0 {
 		if cli.json {
 			println('[]')
@@ -210,10 +292,27 @@ fn run_restore(store trash.Store, cli Cli) ! {
 		println('Aborted.')
 		return
 	}
-	batch := store.restore_batch(selected)!
-	if cli.json {
-		mut plans := []RestorePlan{}
+	order, groups := group_entries(selected, scan.roots)
+	mut result_by_id := map[string]trash.RestoreResult{}
+	mut failures := []trash.BatchFailure{}
+	for root in order {
+		store := set.stores[root] or {
+			return error('store `${root}` is not open')
+		}
+		batch := store.restore_batch(groups[root])!
 		for result in batch.results {
+			result_by_id[result.entry.id] = result
+		}
+		failures << batch.failures
+	}
+	mut results := []trash.RestoreResult{cap: selected.len}
+	for entry in selected {
+		result := result_by_id[entry.id] or { continue }
+		results << result
+	}
+	if cli.json {
+		mut plans := []RestorePlan{cap: results.len}
+		for result in results {
 			plans << RestorePlan{
 				id:            result.entry.id
 				original_path: result.entry.original_path
@@ -222,23 +321,22 @@ fn run_restore(store trash.Store, cli Cli) ! {
 		}
 		println(json2.encode(plans, escape_unicode: true))
 	} else {
-		for result in batch.results {
+		for result in results {
 			println('Restored ${result.entry.original_path} -> ${result.restored_to}')
 		}
 	}
-	if batch.failures.len > 0 {
-		for failure in batch.failures {
+	if failures.len > 0 {
+		for failure in failures {
 			eprintln(cli.palette().red('error:') + ' ${failure.subject}: ${failure.message}')
 		}
-		return error('${batch.failures.len} item(s) could not be restored')
+		return error('${failures.len} item(s) could not be restored')
 	}
 }
 
-fn run_empty(store trash.Store, cli Cli) ! {
-	scan := store.scan()
-	warn_broken(scan.broken, cli)
-	cwd := pathx.canonical_path(os.getwd())
-	mut selected := select_entries(store, scan.entries, cli, cwd)!
+fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
+	scan := set.scan_all(cli)
+	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
+	mut selected := select_entries(&set, scan, cli, cwd)!
 	// Broken items (orphan payloads, rows without a payload) are never deleted
 	// unless --include-broken explicitly asks for it.
 	broken_targets := if cli.include_broken { scan.broken.len } else { 0 }
@@ -265,53 +363,108 @@ fn run_empty(store trash.Store, cli Cli) ! {
 		println('Aborted.')
 		return
 	}
-	batch := store.empty_batch(selected)!
+	order, groups := group_entries(selected, scan.roots)
+	mut emptied := 0
+	mut emptied_by_root := map[string]int{}
+	mut failures := []trash.BatchFailure{}
+	for root in order {
+		store := set.stores[root] or {
+			return error('store `${root}` is not open')
+		}
+		batch := store.empty_batch(groups[root])!
+		emptied += batch.emptied
+		emptied_by_root[root] = batch.emptied
+		failures << batch.failures
+	}
 	if cli.include_broken {
 		// doctor --purge detaches broken item directories into .gc and cleans up.
-		report := store.doctor(purge: true)!
-		for item in report.items {
-			if item.action != 'purged' {
-				eprintln(cli.palette().red('warning:') + ' could not remove broken item ${format.short_id(item.id)}: ${item.reason} (${item.action})')
+		for root in set.roots {
+			store := set.stores[root] or { continue }
+			report := store.doctor(purge: true)!
+			for item in report.items {
+				if item.action != 'purged' {
+					eprintln(cli.palette().red('warning:') + ' could not remove broken item ${format.short_id(item.id)}: ${item.reason} (${item.action})')
+				}
 			}
 		}
-	} else if batch.emptied > 0 && cli.wait {
-		store.gc()!
+	} else if emptied > 0 && cli.wait {
+		for root in order {
+			if emptied_by_root[root] > 0 {
+				store := set.stores[root] or { continue }
+				store.gc()!
+			}
+		}
 	}
 	if cli.json {
-		println(json2.encode(EmptyReport{ emptied: batch.emptied }, escape_unicode: true))
+		println(json2.encode(EmptyReport{ emptied: emptied }, escape_unicode: true))
 	} else {
-		println('Permanently deleted ${batch.emptied} item(s).')
+		println('Permanently deleted ${emptied} item(s).')
 	}
-	if batch.failures.len > 0 {
-		for failure in batch.failures {
+	if failures.len > 0 {
+		for failure in failures {
 			eprintln(cli.palette().red('error:') + ' ${failure.subject}: ${failure.message}')
 		}
-		return error('${batch.failures.len} item(s) could not be deleted')
+		return error('${failures.len} item(s) could not be deleted')
 	}
 }
 
-fn run_stats(store trash.Store, cli Cli) ! {
-	stats := store.stats()
-	report := StatsReport{
-		root:    store.root
-		items:   stats.items
-		broken:  stats.broken
-		size:    stats.size
-		unknown: stats.unknown
-		oldest:  stats.oldest
-		newest:  stats.newest
+fn run_stats(mut set StoreSet, cli Cli) ! {
+	mut report := StatsReport{
+		root: set.spec.root
+	}
+	for root in set.roots {
+		store := set.stores[root] or { continue }
+		stats := store.stats()
+		report.roots << StatsRootReport{
+			root:    root
+			items:   stats.items
+			broken:  stats.broken
+			size:    stats.size
+			unknown: stats.unknown
+			oldest:  stats.oldest
+			newest:  stats.newest
+		}
+		report.items += stats.items
+		report.broken += stats.broken
+		report.size += stats.size
+		report.unknown += stats.unknown
+		if stats.oldest != '' && (report.oldest == '' || stats.oldest < report.oldest) {
+			report.oldest = stats.oldest
+		}
+		if stats.newest != '' && stats.newest > report.newest {
+			report.newest = stats.newest
+		}
 	}
 	if cli.json {
 		println(json2.encode(report, escape_unicode: true))
 		return
 	}
-	println('${report.root}')
-	println('${report.items} item(s), ${format.format_size(report.size)}${unknown_suffix(report.unknown)}')
-	if report.oldest != '' {
-		println('oldest ${format.format_time(time.parse(report.oldest) or { time.now() })}  newest ${format.format_time(time.parse(report.newest) or { time.now() })}')
+	for i, root_report in report.roots {
+		if report.roots.len > 1 {
+			if i > 0 {
+				println('')
+			}
+			println(root_report.root)
+		} else {
+			println(root_report.root)
+		}
+		println('${root_report.items} item(s), ${format.format_size(root_report.size)}${unknown_suffix(root_report.unknown)}')
+		if root_report.oldest != '' {
+			println('oldest ${format.format_time(time.parse(root_report.oldest) or { time.now() })}  newest ${format.format_time(time.parse(root_report.newest) or { time.now() })}')
+		}
+		if root_report.broken > 0 {
+			println(cli.palette().red('${root_report.broken} broken item(s)'))
+		}
 	}
-	if report.broken > 0 {
-		println(cli.palette().red('${report.broken} broken item(s)'))
+	if report.roots.len > 1 {
+		println('')
+		println('total: ${report.items} item(s), ${format.format_size(report.size)}${unknown_suffix(report.unknown)}')
+		if report.oldest != '' {
+			println('oldest ${format.format_time(time.parse(report.oldest) or { time.now() })}  newest ${format.format_time(time.parse(report.newest) or { time.now() })}')
+		}
+		if report.broken > 0 {
+			println(cli.palette().red('${report.broken} broken item(s)'))
+		}
 	}
 }
 
@@ -350,9 +503,9 @@ fn read_where_input(cli Cli) !WhereInput {
 	}
 }
 
-fn run_where(store trash.Store, cli Cli) ! {
-	scan := store.scan()
-	warn_broken(scan.broken, cli)
+fn run_where(mut set StoreSet, cli Cli) ! {
+	scan := set.scan_all(cli)
+	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
 	input := read_where_input(cli)!
 	resolution := resolve_refs(scan.entries, input.refs, cli.recursive, input.from_stdin)!
 	for warning in resolution.warnings {
@@ -366,6 +519,8 @@ fn run_where(store trash.Store, cli Cli) ! {
 	})
 	mut locations := []JsonLocation{cap: selected.len}
 	for entry in selected {
+		root := scan.roots[entry.id] or { continue }
+		store := set.stores[root] or { continue }
 		locations << JsonLocation{
 			id:       entry.id
 			location: store.payload_path(entry.id)
@@ -383,20 +538,48 @@ fn run_where(store trash.Store, cli Cli) ! {
 	}
 }
 
-fn run_doctor(store trash.Store, cli Cli) ! {
-	report := store.doctor(
-		repair:          cli.doctor_repair
-		purge:           cli.doctor_purge
-		integrity_check: cli.doctor_integrity
-		compact:         cli.doctor_compact
-		backup:          cli.doctor_backup
-		rebuild:         cli.doctor_rebuild
-		reindex:         cli.doctor_reindex
-	)!
+fn run_doctor(mut set StoreSet, cli Cli) ! {
+	mut all := DoctorAllReport{}
+	for root in set.roots {
+		store := set.stores[root] or { continue }
+		report := store.doctor(
+			repair:          cli.doctor_repair
+			purge:           cli.doctor_purge
+			integrity_check: cli.doctor_integrity
+			compact:         cli.doctor_compact
+			backup:          cli.doctor_backup
+			rebuild:         cli.doctor_rebuild
+			reindex:         cli.doctor_reindex
+		)!
+		all.roots << DoctorStoreReport{
+			root:   root
+			report: report
+		}
+		all.broken += report.broken
+		all.repaired += report.repaired
+		all.purged += report.purged
+		all.sized += report.sized
+		all.unknown += report.unknown
+		all.rebuilt += report.rebuilt
+		all.compacted = all.compacted || report.compacted
+		all.reindexed = all.reindexed || report.reindexed
+	}
 	if cli.json {
-		println(json2.encode(report, escape_unicode: true))
+		println(json2.encode(all, escape_unicode: true))
 		return
 	}
+	for i, scoped in all.roots {
+		if all.roots.len > 1 {
+			if i > 0 {
+				println('')
+			}
+			println(scoped.root)
+		}
+		print_doctor_report(scoped.report, cli)
+	}
+}
+
+fn print_doctor_report(report trash.DoctorReport, cli Cli) {
 	mut printed := false
 	if report.integrity != '' {
 		println('integrity: ${report.integrity}')
