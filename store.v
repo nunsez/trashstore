@@ -287,7 +287,7 @@ fn unique_dirs(dirs []string) []string {
 // holds the exclusive lock, recovery is deferred: the report is empty and the
 // lock holder (or the next run) finishes it.
 pub fn (s Store) recover_if_needed() !RecoveryReport {
-	pending := s.pending_items() or { []IndexItem{} }
+	pending := s.pending_items()!
 	garbage := os.ls(s.gc_dir()) or { []string{} }
 	if pending.len == 0 && garbage.len == 0 {
 		return RecoveryReport{}
@@ -296,8 +296,8 @@ pub fn (s Store) recover_if_needed() !RecoveryReport {
 	defer {
 		fl.release()
 	}
-	report := s.recover_locked()!
-	s.gc_locked()!
+	mut report := s.recover_locked()!
+	report.warnings << s.gc_locked_warnings()!
 	return report
 }
 
@@ -307,8 +307,8 @@ pub fn (s Store) recover() !RecoveryReport {
 	defer {
 		fl.release()
 	}
-	report := s.recover_locked()!
-	s.gc_locked()!
+	mut report := s.recover_locked()!
+	report.warnings << s.gc_locked_warnings()!
 	return report
 }
 
@@ -327,18 +327,27 @@ fn (s Store) recover_locked() !RecoveryReport {
 		}
 		match item.state {
 			.pending {
-				s.recover_put(item)!
+				s.recover_put(item) or {
+					report.warnings << 'item ${item.id}: ${err.msg()}'
+					continue
+				}
 				report.recovered++
 			}
 			.restoring {
-				warning := s.recover_restore(item)!
+				warning := s.recover_restore(item) or {
+					report.warnings << 'item ${item.id}: ${err.msg()}'
+					continue
+				}
 				if warning != '' {
 					report.warnings << warning
 				}
 				report.recovered++
 			}
 			.pending_empty {
-				s.recover_empty(item)!
+				s.recover_empty(item) or {
+					report.warnings << 'item ${item.id}: ${err.msg()}'
+					continue
+				}
 				report.recovered++
 			}
 			else {}
@@ -494,28 +503,40 @@ pub fn (s Store) gc() ! {
 	s.gc_locked()!
 }
 
-fn (s Store) gc_locked() ! {
+// gc_locked removes garbage and returns one warning per entry it could not
+// remove. A single stubborn entry must not turn into a fatal error: the caller
+// keeps working and surfaces the warnings instead.
+fn (s Store) gc_locked_warnings() ![]string {
 	if os.is_link(s.gc_dir()) {
 		return invalid_target_error('garbage directory `${s.gc_dir()}` must not be a symlink')
 	}
 	if !os.is_dir(s.gc_dir()) {
-		return
+		return []string{}
 	}
 	mut gc := fsx.open_dir(s.gc_dir())!
 	defer {
 		gc.close()
 	}
 	entries := os.ls(s.gc_dir()) or { []string{} }
-	mut failures := []string{}
+	mut warnings := []string{}
 	for entry in entries {
+		failpoint('gc:remove-${entry}') or {
+			warnings << '${entry}: ${err.msg()}'
+			continue
+		}
 		gc.remove_child_any(entry, os.join_path(s.gc_dir(), entry)) or {
-			failures << '${entry}: ${err.msg()}'
+			warnings << '${entry}: ${err.msg()}'
 			continue
 		}
 	}
 	gc.sync(s.gc_dir())!
-	if failures.len > 0 {
-		return io_error('could not remove ${failures.len} garbage item(s): ${failures.join('; ')}')
+	return warnings
+}
+
+fn (s Store) gc_locked() ! {
+	warnings := s.gc_locked_warnings()!
+	if warnings.len > 0 {
+		return io_error('could not remove ${warnings.len} garbage item(s): ${warnings.join('; ')}')
 	}
 }
 
@@ -556,6 +577,7 @@ pub mut:
 	compacted bool
 	reindexed bool
 	items     []DoctorItem
+	warnings  []string
 }
 
 // doctor inspects broken items under an exclusive lock and optionally recovers
@@ -636,7 +658,7 @@ pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
 		}
 	}
 	if report.purged > 0 {
-		s.gc_locked()!
+		report.warnings << s.gc_locked_warnings()!
 	}
 	return report
 }

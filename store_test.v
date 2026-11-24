@@ -2137,6 +2137,67 @@ fn test_gc_reports_unremovable_items_and_retries() {
 	}
 }
 
+// regression: P0-4 — a garbage item that cannot be removed is reported as a
+// warning and does not block normal commands.
+fn test_gc_failure_is_a_warning_not_fatal() {
+	root := core_dir('gc_warning')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	garbage := os.join_path(store.gc_dir(), 'blocked')
+	core_write(garbage, 'x')
+	os.setenv('TRASH_TEST_FAILPOINTS', '1', true)
+	os.setenv('TRASH_FAILPOINT', 'gc:remove-blocked', true)
+	report := store.recover_if_needed() or {
+		os.unsetenv('TRASH_FAILPOINT')
+		os.unsetenv('TRASH_TEST_FAILPOINTS')
+		panic(err)
+	}
+	os.unsetenv('TRASH_FAILPOINT')
+	os.unsetenv('TRASH_TEST_FAILPOINTS')
+	assert report.warnings.len == 1
+	assert report.warnings[0].contains('blocked')
+	assert os.exists(garbage)
+	// Read paths keep working while garbage is stuck.
+	assert store.count_items() == 0
+	assert store.scan().broken.len == 0
+	store.gc() or { panic(err) }
+	assert !os.exists(garbage)
+}
+
+// regression: P0-4 — recovery keeps processing items after one of them fails.
+fn test_recovery_continues_after_item_error() {
+	$if !windows {
+		root := core_dir('recover_continue')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		first := 'a-pending-empty'
+		os.mkdir_all(store.item_dir(first)) or { panic(err) }
+		core_write(store.data_path(first), 'x')
+		core_insert(store, first, .pending_empty, os.join_path(root, 'a.txt'))
+		second := 'b-pending-put'
+		core_insert(store, second, .pending, os.join_path(root, 'b.txt'))
+
+		os.chmod(store.gc_dir(), 0o500) or { panic(err) }
+		report := store.recover() or {
+			os.chmod(store.gc_dir(), 0o700) or {}
+			panic(err)
+		}
+		os.chmod(store.gc_dir(), 0o700) or { panic(err) }
+
+		assert report.warnings.len >= 1
+		// The first item could not be moved into .gc; its row is kept.
+		assert store.get_item(first)!.state == .pending_empty
+		assert os.exists(store.data_path(first))
+		// The second item was still recovered despite the first failure.
+		store.get_item(second) or { return }
+		panic('second item should have been recovered')
+	}
+}
+
 // regression: P0-1 — ids read from the index are never turned into paths.
 fn test_scan_and_recovery_reject_unsafe_index_ids() {
 	root := core_dir('unsafe_index_ids')

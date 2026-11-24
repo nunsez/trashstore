@@ -589,6 +589,9 @@ fn run_doctor(mut set StoreSet, cli Cli) ! {
 
 fn print_doctor_report(report trash.DoctorReport, cli Cli) {
 	mut printed := false
+	for warning in report.warnings {
+		eprintln(cli.palette().red('warning:') + ' ${warning}')
+	}
 	if report.integrity != '' {
 		println('integrity: ${report.integrity}')
 		printed = true
