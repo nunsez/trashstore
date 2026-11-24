@@ -377,6 +377,57 @@ fn test_run_where_resolves_target() {
 	cli_run(['trash', '--store', store_path, 'where', '--json', entry.id]) or { panic(err) }
 }
 
+fn test_resolve_refs_preserves_order_and_dedupes() {
+	root := cli_dir('resolve_refs')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	a := os.join_path(root, 'a.txt')
+	b := os.join_path(root, 'b.txt')
+	cli_write(a, 'a')
+	cli_write(b, 'b')
+	cli_run(['trash', '--store', store_path, a]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, b]) or { panic(err) }
+	store := open(store_path) or { panic(err) }
+	entries := store.scan().entries
+	mut a_id := ''
+	mut b_id := ''
+	for entry in entries {
+		if entry.original_path == a {
+			a_id = entry.id
+		} else if entry.original_path == b {
+			b_id = entry.id
+		}
+	}
+	res := resolve_refs(entries, [a_id, b_id, a_id], false, false) or { panic(err) }
+	assert res.entries.len == 2
+	assert res.entries[0].id == a_id
+	assert res.entries[1].id == b_id
+	assert res.failed == 0
+}
+
+fn test_resolve_refs_tolerant_counts_failures() {
+	root := cli_dir('resolve_refs_tolerant')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	a := os.join_path(root, 'a.txt')
+	cli_write(a, 'a')
+	cli_run(['trash', '--store', store_path, a]) or { panic(err) }
+	store := open(store_path) or { panic(err) }
+	entries := store.scan().entries
+	res := resolve_refs(entries, [entries[0].id, 'deadbeefdeadbeef'], false, true) or {
+		panic(err)
+	}
+	assert res.entries.len == 1
+	assert res.failed == 1
+	mut failed := false
+	resolve_refs(entries, ['deadbeefdeadbeef'], false, false) or { failed = true }
+	assert failed
+}
+
 fn test_run_where_reads_refs_from_stdin() {
 	$if !windows {
 		root := cli_dir('run_where_stdin')

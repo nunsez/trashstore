@@ -10,7 +10,7 @@ fn general_help() string {
 		'  list      List trashed items (direct children of cwd by default)\n' +
 		'  restore   Restore trashed items (direct children of cwd by default)\n' +
 		'  empty     Permanently delete trashed items (cwd by default)\n' +
-		'  where     Show where selected items are stored (locator)\n' +
+		'  where     Print payload paths of selected items (locator)\n' +
 		'  stats     Show the trash location, item count and known size\n' +
 		'  doctor    Report or repair broken trash items\n' +
 		'  help      Show help for a command\n' +
@@ -125,10 +125,10 @@ fn command_help(c Command) string {
 		}
 		.where {
 			'Usage: trash where [OPTIONS] [<id|prefix|path>...]\n\n' +
-				'Shows where selected items are stored: the full id, deletion time,\n' +
-				'size, payload location inside the trash, and original path. Refs are\n' +
-				'resolved from the arguments or, when stdin is not a terminal, from\n' +
-				'one ref per line on stdin.\n\n' +
+				'Prints the payload path of each selected item inside the trash, one\n' +
+				'per line. Refs are resolved from the arguments or, when stdin is not a\n' +
+				'terminal, from one ref per line on stdin. Multiple refs produce one\n' +
+				'path per match, in argument order; use `list` for metadata.\n\n' +
 				'Options:\n' +
 				'  -r, --recursive   Include the subtree of a directory target\n' +
 				'  --kind KIND       file, dir, symlink or other\n' +
@@ -138,7 +138,7 @@ fn command_help(c Command) string {
 				'  --store PATH      Use PATH as the trash store\n\n' +
 				'Examples:\n' +
 				'  trash where 01a203aa\n' +
-				'  trash where ./report.txt\n' +
+				'  trash where ./report.txt ./notes.txt\n' +
 				'  trash list --all --grep report --ids | trash where\n'
 		}
 		.stats {

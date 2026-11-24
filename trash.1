@@ -37,12 +37,13 @@ from the current directory. Use \fB--all\fR for the whole trash. This cannot be
 undone.
 .TP
 .B where
-Show where selected items are stored: the full id, deletion time, size, the
-payload location inside the trash, and the original path. Refs are resolved
-from the arguments or, when stdin is not a terminal, from one ref per line on
-stdin. \fBwhere\fR is a locator and has no selection of its own; use
-\fBlist --ids\fR to feed it a filtered set. Unresolvable refs read from stdin
-are reported as warnings and skipped, and the exit status is non-zero.
+Print the payload path of each selected item inside the trash, one per line.
+Refs are resolved from the arguments or, when stdin is not a terminal, from one
+ref per line on stdin. Multiple refs produce one path per match, in argument
+order, with duplicates dropped; \fBwhere\fR prints no metadata, so use
+\fBlist\fR for that. Unresolvable refs read from stdin are reported as
+warnings and skipped, and the exit status is non-zero; an unresolvable explicit
+target is an error and nothing is printed.
 .TP
 .B stats
 Show the trash location, the item count, and the total size of the items whose

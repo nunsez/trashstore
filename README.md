@@ -91,11 +91,13 @@ trash list --json
 
 `where` is a locator: it accepts full ids, short ids, unique id prefixes, and
 original paths, either as arguments or as one ref per line on stdin, and prints
-the payload location inside the store together with the deletion time, size,
-and original path. It has no selection of its own; use `list --ids` to feed it
-a filtered set. When stdin is not a terminal and no targets are given, `where`
-reads refs from stdin; unresolvable refs are reported as warnings and skipped,
-and the command exits non-zero if any were skipped.
+the payload path of each match inside the store, one per line. It prints no
+metadata; use `list` for that. Multiple refs produce one path per match, in
+argument order, with duplicates dropped. When stdin is not a terminal and no
+targets are given, `where` reads refs from stdin; unresolvable refs are
+reported as warnings and skipped, and the command exits non-zero if any were
+skipped. With explicit targets an unresolvable ref is an error and nothing is
+printed.
 
 `stats` prints the store location, item count, total known size, and the oldest
 and newest deletion times.
@@ -127,7 +129,7 @@ exit status. The main shapes are:
 - `list` → `{ id, original_path, deleted_at, kind, size, size_known }[]`
 - `restore` → `{ id, original_path, restored_to }[]`
 - `empty` → `{ emptied, dry_run }` (plus `items` with `--dry-run`)
-- `where` → `{ id, location, original_path, deleted_at, kind, size, size_known }[]`
+- `where` → `{ id, location }[]`
 - `stats` → `{ root, items, broken, size, unknown, oldest, newest }`
 - `doctor` → `{ broken, repaired, purged, sized, unknown, items: [{ id, reason, action }] }`
 

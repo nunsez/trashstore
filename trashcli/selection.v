@@ -68,40 +68,18 @@ pub fn resolve_selection(entries []Entry, opts SelectionOptions) ![]Entry {
 	)
 }
 
-fn collect_targets(entries []Entry, targets []string, recursive bool) ![]Entry {
-	mut selected := []Entry{}
-	mut seen := map[string]bool{}
-	for target in targets {
-		candidate := canonical_target_path(target)
-		mut matched := find_in(entries, target) or { []Entry{} }
-		if recursive {
-			for entry in entries {
-				if is_path_within(entry.original_path, candidate) {
-					matched << entry
-				}
-			}
-		}
-		if matched.len == 0 {
-			// Surface the regular not-found/ambiguous error for this target.
-			_ := find_in(entries, target)!
-		}
-		for entry in matched {
-			if entry.id in seen {
-				continue
-			}
-			seen[entry.id] = true
-			selected << entry
-		}
-	}
-	selected.sort(a.id > b.id)
-	return selected
+struct RefResolution {
+mut:
+	entries []Entry
+	failed  int
 }
 
-// collect_refs_tolerant resolves refs like collect_targets, but treats an
-// unresolvable ref as a warning instead of an error. It returns the resolved
-// entries and the number of skipped refs, so a piped batch keeps its successful
-// results while the caller can still exit non-zero.
-fn collect_refs_tolerant(entries []Entry, refs []string, recursive bool) ([]Entry, int) {
+// resolve_refs resolves targets in argument order. Within one target the
+// matched entries keep their store order (newest first) and duplicates across
+// targets are dropped. When tolerant is false an unresolvable target aborts
+// with the regular not-found/ambiguous error; when it is true the ref is
+// reported as a warning, skipped, and counted in failed.
+fn resolve_refs(entries []Entry, refs []string, recursive bool, tolerant bool) !RefResolution {
 	mut selected := []Entry{}
 	mut seen := map[string]bool{}
 	mut failed := 0
@@ -120,6 +98,10 @@ fn collect_refs_tolerant(entries []Entry, refs []string, recursive bool) ([]Entr
 			}
 		}
 		if matched.len == 0 {
+			if !tolerant {
+				// Surface the regular not-found/ambiguous error for this target.
+				_ := find_in(entries, ref)!
+			}
 			if failure != '' {
 				eprintln('warning: ${failure} (skipped)')
 				failed++
@@ -134,8 +116,17 @@ fn collect_refs_tolerant(entries []Entry, refs []string, recursive bool) ([]Entr
 			selected << entry
 		}
 	}
+	return RefResolution{
+		entries: selected
+		failed:  failed
+	}
+}
+
+fn collect_targets(entries []Entry, targets []string, recursive bool) ![]Entry {
+	res := resolve_refs(entries, targets, recursive, false)!
+	mut selected := res.entries.clone()
 	selected.sort(a.id > b.id)
-	return selected, failed
+	return selected
 }
 
 // parse_selection_input parses "1,3-5" / "a" / "q" into zero-based indices.

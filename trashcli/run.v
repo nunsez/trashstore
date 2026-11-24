@@ -432,36 +432,29 @@ fn run_where(store Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
 	input := read_where_input(cli)!
-	mut selected := []Entry{}
-	mut failed := 0
-	if input.from_stdin {
-		selected, failed = collect_refs_tolerant(scan.entries, input.refs, cli.recursive)
-	} else {
-		selected = collect_targets(scan.entries, input.refs, cli.recursive)!
-	}
-	selected = filter_entries(selected, ListFilter{
+	resolution := resolve_refs(scan.entries, input.refs, cli.recursive, input.from_stdin)!
+	selected := filter_entries(resolution.entries, ListFilter{
 		all:                true
 		kind:               cli.kind
 		grep:               cli.grep
 		older_than_seconds: cli.older_than_seconds
 	})
-	selected = store.fill_sizes(selected)
-	mut items := []WhereItem{cap: selected.len}
+	mut locations := []JsonLocation{cap: selected.len}
 	for entry in selected {
-		items << WhereItem{
-			entry:    entry
+		locations << JsonLocation{
+			id:       entry.id
 			location: store.payload_path(entry.id)
 		}
 	}
 	if cli.json {
-		println(json2.encode(json_wheres(items), escape_unicode: true))
-	} else if items.len == 0 {
-		println('No matching trashed items.')
+		println(json2.encode(locations, escape_unicode: true))
 	} else {
-		print_where_table(items, cli.palette())
+		for item in locations {
+			println(item.location)
+		}
 	}
-	if failed > 0 {
-		return error('${failed} ref(s) could not be resolved')
+	if resolution.failed > 0 {
+		return error('${resolution.failed} ref(s) could not be resolved')
 	}
 }
 
