@@ -580,6 +580,34 @@ pub mut:
 	warnings  []string
 }
 
+// purge_broken_locked detaches one broken item. The payload is moved into .gc
+// first, and only then is the index row removed: a failed rename leaves both
+// the row and the payload untouched, while a failed delete leaves the payload
+// in .gc (still recoverable) and keeps the row. The returned string is the
+// action shown in the doctor report.
+fn (s Store) purge_broken_locked(id string) string {
+	mut items := fsx.open_dir(s.items_dir()) or { return 'purge failed' }
+	defer {
+		items.close()
+	}
+	mut gc := fsx.open_dir(s.gc_dir()) or { return 'purge failed' }
+	defer {
+		gc.close()
+	}
+	if os.is_dir(s.item_dir(id)) {
+		new_id := s.next_id()
+		if !is_safe_id(new_id) {
+			return 'purge failed'
+		}
+		dest_name := 'doctor-${id}-${new_id}'
+		fsx.renameat_noreplace(items.fd, id, gc.fd, dest_name) or { return 'purge failed' }
+	}
+	s.delete_item(id) or { return 'purge failed' }
+	items.sync(s.items_dir()) or { return 'purge failed' }
+	gc.sync(s.gc_dir()) or { return 'purge failed' }
+	return 'purged'
+}
+
 // doctor inspects broken items under an exclusive lock and optionally recovers
 // pending operations or detaches broken items into the garbage directory.
 pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
@@ -626,17 +654,9 @@ pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
 			// leave it for the user instead of following or silently removing it.
 			action = 'skipped: symlinked item'
 		} else if opts.purge {
-			s.delete_item(broken.id) or {}
-			dir := s.item_dir(broken.id)
-			if os.is_dir(dir) {
-				dest := os.join_path(s.gc_dir(), 'doctor-${broken.id}-${s.next_id()}')
-				fsx.rename_noreplace(dir, dest) or { action = 'purge failed' }
-			}
-			if action != 'purge failed' {
-				action = 'purged'
+			action = s.purge_broken_locked(broken.id)
+			if action == 'purged' {
 				report.purged++
-				s.sync_dir(s.items_dir())!
-				s.sync_dir(s.gc_dir())!
 			}
 		}
 		report.items << DoctorItem{

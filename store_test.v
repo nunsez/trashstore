@@ -2329,3 +2329,90 @@ fn test_doctor_does_not_purge_invalid_id() {
 	assert (os.read_file(os.join_path(victim, 'keep.txt')) or { '' }) == 'keep'
 	assert store.all_items()!.len == 1
 }
+
+// regression: P0-5 — a failed rename must leave both the row and the payload.
+fn test_doctor_purge_rename_failure_keeps_row_and_payload() {
+	root := core_dir('doctor_purge_rename_fail')
+	defer {
+		core_cleanup(root)
+	}
+	store := open_with(os.join_path(root, 'trash'),
+		id_gen: fn () string {
+			return 'fixed-new-id'
+		}
+	) or { panic(err) }
+	id := 'broken-item'
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'precious')
+	core_insert(store, id, .pending, os.join_path(root, 'x'))
+	// Occupying the destination makes renameat_noreplace fail with EEXIST.
+	blocker := os.join_path(store.gc_dir(), 'doctor-${id}-fixed-new-id')
+	core_write(blocker, 'blocker')
+
+	report := store.doctor(purge: true) or { panic(err) }
+	assert report.broken == 1
+	assert report.purged == 0
+	assert report.items[0].action == 'purge failed'
+	assert (store.get_item(id) or { panic(err) }).id == id
+	assert (os.read_file(store.data_path(id)) or { '' }) == 'precious'
+	assert (os.read_file(blocker) or { '' }) == 'blocker'
+}
+
+// regression: P0-5 — a failed delete must not count the item as purged; the
+// payload is already in .gc and must remain readable.
+fn test_doctor_purge_delete_failure_keeps_payload() {
+	root := core_dir('doctor_purge_delete_fail')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	id := 'broken-item'
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'precious')
+	core_insert(store, id, .pending, os.join_path(root, 'x'))
+	os.setenv('TRASH_TEST_FAILPOINTS', '1', true)
+	os.setenv('TRASH_FAILPOINT', 'index:delete-item', true)
+	defer {
+		os.unsetenv('TRASH_FAILPOINT')
+		os.unsetenv('TRASH_TEST_FAILPOINTS')
+	}
+
+	report := store.doctor(purge: true) or { panic(err) }
+	assert report.broken == 1
+	assert report.purged == 0
+	assert report.items[0].action == 'purge failed'
+	assert (store.get_item(id) or { panic(err) }).id == id
+	assert !os.exists(store.item_dir(id))
+	mut moved := ''
+	for entry in os.ls(store.gc_dir()) or { []string{} } {
+		if entry.starts_with('doctor-${id}-') {
+			moved = os.join_path(store.gc_dir(), entry)
+		}
+	}
+	assert moved != ''
+	assert (os.read_file(os.join_path(moved, 'data')) or { '' }) == 'precious'
+}
+
+// regression: P0-5 / P1-9 — an unsafe generated id must not move anything.
+fn test_doctor_purge_rejects_unsafe_generated_id() {
+	root := core_dir('doctor_purge_unsafe_id')
+	defer {
+		core_cleanup(root)
+	}
+	store := open_with(os.join_path(root, 'trash'),
+		id_gen: fn () string {
+			return '../escape'
+		}
+	) or { panic(err) }
+	id := 'broken-item'
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'precious')
+	core_insert(store, id, .pending, os.join_path(root, 'x'))
+
+	report := store.doctor(purge: true) or { panic(err) }
+	assert report.purged == 0
+	assert report.items[0].action == 'purge failed'
+	assert (store.get_item(id) or { panic(err) }).id == id
+	assert (os.read_file(store.data_path(id)) or { '' }) == 'precious'
+	assert !os.exists(os.join_path(root, 'escape'))
+}

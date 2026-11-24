@@ -154,6 +154,7 @@ fn (s Store) set_item_size(id string, size u64) !bool {
 }
 
 fn (s Store) delete_item(id string) !bool {
+	failpoint('index:delete-item')!
 	mut db := s.db
 	mut st := db.prepare('DELETE FROM items WHERE id = ?')!
 	defer {
