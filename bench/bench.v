@@ -43,6 +43,19 @@ fn main() {
 	_ := store.find(entries[0].id) or { panic(err) }
 	find_ms := elapsed_ms(start)
 
+	// The first list measures every unknown size; the second one reuses the
+	// sizes stored in the item metadata.
+	start = time.now()
+	first := store.list(all: true)
+	list_fill_ms := elapsed_ms(start)
+
+	start = time.now()
+	second := store.list(all: true)
+	list_cached_ms := elapsed_ms(start)
+	if first.len != n || second.len != n {
+		panic('expected ${n} listed entries, got ${first.len} and ${second.len}')
+	}
+
 	start = time.now()
 	restore_batch := store.restore_batch(entries) or { panic(err) }
 	if restore_batch.failures.len > 0 {
@@ -50,5 +63,5 @@ fn main() {
 	}
 	restore_ms := elapsed_ms(start)
 
-	println('items=${n} put=${put_ms:.1f}ms scan=${scan_ms:.1f}ms find_full_id=${find_ms:.1f}ms batch_restore=${restore_ms:.1f}ms')
+	println('items=${n} put=${put_ms:.1f}ms scan=${scan_ms:.1f}ms find_full_id=${find_ms:.1f}ms list_fill=${list_fill_ms:.1f}ms list_cached=${list_cached_ms:.1f}ms batch_restore=${restore_ms:.1f}ms')
 }

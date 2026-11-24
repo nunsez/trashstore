@@ -104,10 +104,17 @@ fn test_put_file_moves_payload_and_writes_meta() {
 	assert entry.id != ''
 	assert entry.kind == .file
 	assert entry.state == .trashed
-	assert entry.size == 5
+	// Sizes are measured lazily from the payload, so a fresh entry has none.
+	assert !entry.size_known
+	assert entry.size == 0
 	assert !os.exists(file)
 	assert (os.read_file(store.data_path(entry.id)) or { '' }) == 'hello'
+	filled := store.fill_size(entry)
+	assert filled.size_known
+	assert filled.size == 5
 	meta := core_meta(store, entry.id)
+	assert meta.size == 5
+	assert meta.size_known
 	assert meta.state == 'trashed'
 	assert percent_decode_path(meta.original_path) or { '' } == file
 	assert meta.restore_to == ''
@@ -1159,7 +1166,12 @@ fn test_put_many_and_stats() {
 	assert batch.failures.len == 0
 	stats := store.stats()
 	assert stats.items == 3
-	assert stats.size == u64(15)
+	assert stats.size == u64(0)
+	assert stats.unknown == 3
+	_ := store.fill_sizes(batch.entries)
+	sized := store.stats()
+	assert sized.size == u64(15)
+	assert sized.unknown == 0
 }
 
 fn test_restore_batch_reports_partial_failure() {
@@ -1310,4 +1322,184 @@ fn test_meta_json_random_input_does_not_panic() {
 		}
 		json2.decode[Meta](bytes.bytestr()) or {}
 	}
+}
+
+fn test_measure_path_sums_regular_files_only() {
+	$if !windows {
+		root := core_dir('measure_tree')
+		defer {
+			core_cleanup(root)
+		}
+		dir := os.join_path(root, 'tree')
+		core_write(os.join_path(dir, 'a.txt'), '12345')
+		core_write(os.join_path(dir, 'sub', 'b.txt'), '123')
+		os.mkdir_all(os.join_path(dir, 'empty')) or { panic(err) }
+		os.symlink(os.join_path(dir, 'a.txt'), os.join_path(dir, 'link')) or { panic(err) }
+
+		size, ok := measure_path(dir, .dir)
+		assert ok
+		assert size == 8
+		file_size, file_ok := measure_path(os.join_path(dir, 'a.txt'), .file)
+		assert file_ok
+		assert file_size == 5
+		link_size, link_ok := measure_path(os.join_path(dir, 'link'), .symlink)
+		assert link_ok
+		assert link_size == 0
+	}
+}
+
+fn test_measure_path_reports_unreadable_subdir() {
+	$if !windows {
+		if os.geteuid() == 0 {
+			return
+		}
+		root := core_dir('measure_unreadable')
+		defer {
+			core_cleanup(root)
+		}
+		dir := os.join_path(root, 'tree')
+		core_write(os.join_path(dir, 'a.txt'), '1')
+		hidden := os.join_path(dir, 'hidden')
+		core_write(os.join_path(hidden, 'b.txt'), '22')
+		os.chmod(hidden, 0o000) or { panic(err) }
+		defer {
+			os.chmod(hidden, 0o700) or {}
+		}
+
+		_, ok := measure_path(dir, .dir)
+		assert !ok
+	}
+}
+
+fn test_fill_size_persists_directory_size() {
+	$if !windows {
+		root := core_dir('fill_dir')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		dir := os.join_path(root, 'tree')
+		core_write(os.join_path(dir, 'a.txt'), '12345')
+		core_write(os.join_path(dir, 'sub', 'b.txt'), '123')
+		entry := core_put(store, dir, true)
+		assert !entry.size_known
+
+		filled := store.fill_size(entry)
+		assert filled.size_known
+		assert filled.size == 8
+		meta := core_meta(store, entry.id)
+		assert meta.size_known
+		assert meta.size == 8
+
+		// A second fill must not walk the payload again.
+		again := store.fill_size(filled)
+		assert again.size == 8
+	}
+}
+
+fn test_fill_size_leaves_missing_payload_unknown() {
+	root := core_dir('fill_missing')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'hello')
+	entry := core_put(store, file, false)
+	os.rm(store.data_path(entry.id)) or { panic(err) }
+
+	filled := store.fill_size(entry)
+	assert !filled.size_known
+	assert filled.size == 0
+}
+
+fn test_list_sort_size_measures_candidates() {
+	root := core_dir('list_sort_size')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	small := os.join_path(root, 'small.txt')
+	big := os.join_path(root, 'big.txt')
+	core_write(small, '1')
+	core_write(big, '1234567890')
+	small_entry := core_put(store, small, false)
+	core_put(store, big, false)
+
+	entries := store.list(sort: 'size')
+	assert entries.len == 2
+	assert entries[0].original_path == big
+	assert entries[0].size == 10
+	assert entries[1].original_path == small
+	assert core_meta(store, small_entry.id).size_known
+}
+
+fn test_doctor_repair_measures_unknown_sizes() {
+	$if !windows {
+		root := core_dir('doctor_sizes')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		dir := os.join_path(root, 'tree')
+		core_write(os.join_path(dir, 'a.txt'), '1234')
+		core_write(os.join_path(dir, 'sub', 'b.txt'), '123')
+		core_put(store, dir, true)
+		file := os.join_path(root, 'c.txt')
+		core_write(file, '12345')
+		core_put(store, file, false)
+
+		before := store.stats()
+		assert before.unknown == 2
+		assert before.size == 0
+
+		report := store.doctor(repair: true) or { panic(err) }
+		assert report.sized == 2
+		assert report.unknown == 0
+
+		after := store.stats()
+		assert after.unknown == 0
+		assert after.size == 12
+	}
+}
+
+fn core_write_legacy_meta(store Store, id string, kind string, size u64, original string) {
+	item := store.item_dir(id)
+	os.mkdir_all(item) or { panic(err) }
+	data := store.data_path(id)
+	if kind == 'dir' {
+		os.mkdir_all(data) or { panic(err) }
+	} else {
+		core_write(data, 'x')
+	}
+	meta := '{"id":"${id}","state":"trashed","original_path":"${percent_encode_path(original)}","trashed_at":"${time.now().format_rfc3339()}","kind":"${kind}","size":${size},"restore_to":""}\n'
+	os.write_file(store.meta_path(id), meta) or { panic(err) }
+}
+
+fn test_legacy_metadata_size_is_known_only_when_exact() {
+	root := core_dir('legacy_size')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	core_write_legacy_meta(store, 'legacy-file', 'file', 5, os.join_path(root, 'a.txt'))
+	core_write_legacy_meta(store, 'legacy-empty', 'file', 0, os.join_path(root, 'b.txt'))
+	core_write_legacy_meta(store, 'legacy-dir', 'dir', 7, os.join_path(root, 'c'))
+
+	file_entry := store.read_entry('legacy-file') or { panic(err) }
+	assert file_entry.size_known
+	assert file_entry.size == 5
+	empty_entry := store.read_entry('legacy-empty') or { panic(err) }
+	assert !empty_entry.size_known
+	dir_entry := store.read_entry('legacy-dir') or { panic(err) }
+	assert !dir_entry.size_known
+
+	stats := store.stats()
+	assert stats.unknown == 2
+	assert stats.size == 5
+
+	// A legacy directory size is measured from the payload on demand.
+	filled := store.fill_size(dir_entry)
+	assert filled.size_known
+	assert filled.size == 0
 }

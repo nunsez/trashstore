@@ -87,6 +87,15 @@ trash list --json
 `empty` accept that short id, any unique prefix of it, a unique prefix of the
 full id, or the full id printed by `--long`.
 
+Sizes are measured lazily: `put` only moves the payload, and the size of an
+item (the apparent size of a file, or the sum of the apparent sizes of the
+files inside a directory) is measured the first time `list` shows it and stored
+in the item metadata. Items whose size is not known yet show `-`, and the total
+below the table only sums the known sizes, with an `(N unknown)` suffix.
+`list --no-size` skips measuring (it cannot be combined with `--sort size`),
+`--sort size` measures every candidate before sorting, and
+`trash doctor --repair` measures every item that is still unknown.
+
 The default store is `$XDG_DATA_HOME/trash`, falling back to
 `~/.local/share/trash`. Override it with `--store` or `$TRASH_STORE`; `--store`
 may appear before or after the command. Run `trash help <command>` for
@@ -98,11 +107,14 @@ command-specific flags.
 Output is never coloured; errors still go to stderr with a non-zero exit
 status. The main shapes are:
 
-- `list` → `{ id, original_path, deleted_at, kind, size }[]`
+- `list` → `{ id, original_path, deleted_at, kind, size, size_known }[]`
 - `restore` → `{ id, original_path, restored_to }[]`
 - `empty` → `{ emptied, dry_run }` (plus `items` with `--dry-run`)
-- `where` → `{ root, items, broken, size, oldest, newest }`
-- `doctor` → `{ broken, repaired, purged, items: [{ id, reason, action }] }`
+- `where` → `{ root, items, broken, size, unknown, oldest, newest }`
+- `doctor` → `{ broken, repaired, purged, sized, unknown, items: [{ id, reason, action }] }`
+
+`size` is only meaningful when `size_known` is true; `where` reports the total
+of the known sizes and the number of items whose size was not measured yet.
 
 ## Library API
 
@@ -131,7 +143,9 @@ println('${batch.results.len} restored, ${batch.failures.len} failed')
 ```
 
 Errors are `TrashError` with an `ErrorKind`. Use `scan()`, `stats()`, and the
-`*_batch()` methods for bulk work.
+`*_batch()` methods for bulk work. `Entry.size` is only valid when
+`Entry.size_known` is true; call `fill_size(entry)` or `fill_sizes(entries)` to
+measure unknown sizes and persist them in the item metadata.
 
 The core library never prints, prompts, or exits.
 

@@ -65,6 +65,7 @@ pub mut:
 	older_than_seconds i64
 	wait               bool
 	keep               int
+	no_size            bool
 	doctor_purge       bool
 	doctor_repair      bool
 	targets            []string
@@ -292,6 +293,7 @@ pub fn Cli.parse(args []string) !Cli {
 			'-y', '--yes' { cli.yes = true }
 			'--long', '--full-id' { cli.long = true }
 			'--wait' { cli.wait = true }
+			'--no-size' { cli.no_size = true }
 			'--repair' { cli.doctor_repair = true }
 			'--doctor-purge' { cli.doctor_purge = true }
 			else {
@@ -344,6 +346,12 @@ fn (cli Cli) validate() ! {
 	}
 	if cli.sort != '' && cli.sort !in ['date', 'size', 'path', 'kind'] {
 		return error('--sort must be one of: date, size, path, kind')
+	}
+	if cli.no_size && cli.command != .list {
+		return error('--no-size is only supported by `list`')
+	}
+	if cli.no_size && cli.sort == 'size' {
+		return error('--no-size cannot be combined with --sort size')
 	}
 	if cli.kind != '' && cli.kind !in ['file', 'dir', 'symlink', 'other'] {
 		return error('--kind must be one of: file, dir, symlink, other')

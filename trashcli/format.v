@@ -78,6 +78,7 @@ pub:
 	deleted_at    string
 	kind          string
 	size          u64
+	size_known    bool
 }
 
 fn json_entry(entry Entry) JsonEntry {
@@ -87,6 +88,7 @@ fn json_entry(entry Entry) JsonEntry {
 		deleted_at:    entry.trashed_at.format_rfc3339()
 		kind:          entry.kind.label()
 		size:          entry.size
+		size_known:    entry.size_known
 	}
 }
 
@@ -123,7 +125,7 @@ fn table_lines(entries []Entry, cwd string, long bool, p Palette) []string {
 				format.format_age(entry.trashed_at)
 			}
 			kind: entry.kind.label()
-			size: if entry.kind == .dir { '-' } else { format.format_size(entry.size) }
+			size: if entry.size_known { format.format_size(entry.size) } else { '-' }
 			path: display_path(entry.original_path, cwd)
 		}
 	}
@@ -159,11 +161,24 @@ fn table_lines(entries []Entry, cwd string, long bool, p Palette) []string {
 
 fn print_table(entries []Entry, cwd string, long bool, p Palette) {
 	mut total := u64(0)
+	mut unknown := 0
 	for entry in entries {
-		total += entry.size
+		if entry.size_known {
+			total += entry.size
+		} else {
+			unknown++
+		}
 	}
 	for line in table_lines(entries, cwd, long, p) {
 		println(line)
 	}
-	println(p.dim('${entries.len} item(s), ${format.format_size(total)}'))
+	println(p.dim('${entries.len} item(s), ${format.format_size(total)}${unknown_suffix(unknown)}'))
+}
+
+// unknown_suffix explains that the printed total leaves items out.
+fn unknown_suffix(unknown int) string {
+	if unknown == 0 {
+		return ''
+	}
+	return ' (${unknown} unknown)'
 }

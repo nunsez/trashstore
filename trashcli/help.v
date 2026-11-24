@@ -10,7 +10,7 @@ fn general_help() string {
 		'  list      List trashed items (direct children of cwd by default)\n' +
 		'  restore   Restore trashed items (direct children of cwd by default)\n' +
 		'  empty     Permanently delete trashed items (cwd by default)\n' +
-		'  where     Show the trash location and item count\n' +
+		'  where     Show the trash location, item count and known size\n' +
 		'  doctor    Report or repair broken trash items\n' +
 		'  help      Show help for a command\n' +
 		'  version   Show program version\n\n' +
@@ -62,6 +62,7 @@ fn command_help(c Command) string {
 				'  --kind KIND       file, dir, symlink or other\n' +
 				'  --grep PATTERN    Filter by original path substring\n' +
 				'  --older-than AGE  e.g. 30d, 12h, 5m\n' +
+				'  --no-size         Skip measuring unknown item sizes\n' +
 				'  --store PATH      Use PATH as the trash store\n\n' +
 				'Examples:\n' +
 				'  trash list\n' +
@@ -120,15 +121,18 @@ fn command_help(c Command) string {
 		}
 		.where {
 			'Usage: trash where [OPTIONS]\n\n' +
-				'Shows the trash location and item count.\n\n' +
+				'Shows the trash location, item count and the total size of the items\n' +
+				'whose size is known. Sizes are measured lazily by `list` and\n' +
+				'`doctor --repair`.\n\n' +
 				'Options:\n' +
 				'  --json            Print machine-readable JSON\n' +
 				'  --store PATH      Use PATH as the trash store\n'
 		}
 		.doctor {
 			'Usage: trash doctor [OPTIONS]\n\n' +
-				'Reports broken trash items. With --repair it fixes id mismatches;\n' +
-				'with --doctor-purge it removes broken items.\n\n' +
+				'Reports broken trash items. With --repair it fixes id mismatches and\n' +
+				'measures the size of items whose size is still unknown; with\n' +
+				'--doctor-purge it removes broken items.\n\n' +
 				'Options:\n' +
 				'  --repair          Repair metadata where possible\n' +
 				'  --doctor-purge    Permanently remove broken items\n' +

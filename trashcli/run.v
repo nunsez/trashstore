@@ -17,12 +17,13 @@ struct EmptyPlan {
 }
 
 struct WhereReport {
-	root   string
-	items  int
-	broken int
-	size   u64
-	oldest string
-	newest string
+	root    string
+	items   int
+	broken  int
+	size    u64
+	unknown int
+	oldest  string
+	newest  string
 }
 
 struct RestorePlan {
@@ -132,7 +133,10 @@ fn run_list(store Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
 	cwd := canonical_path(os.getwd())
-	entries := resolve_selection(scan.entries, selection_options(cli, cwd))!
+	mut entries := select_entries(store, scan.entries, cli, cwd)!
+	if !cli.no_size {
+		entries = store.fill_sizes(entries)
+	}
 	if cli.json {
 		println(json2.encode(json_entries(entries), escape_unicode: true))
 		return
@@ -148,11 +152,46 @@ fn run_list(store Store, cli Cli) ! {
 	print_table(entries, cwd, cli.long, cli.palette())
 }
 
+// select_entries resolves the common selection used by list, restore and empty.
+// Sorting by size measures every candidate first, because sizes are filled
+// lazily and would otherwise all sort as zero.
+fn select_entries(store Store, entries []Entry, cli Cli, cwd string) ![]Entry {
+	if cli.sort == 'size' {
+		return size_ordered_selection(store, entries, cli, cwd)
+	}
+	return resolve_selection(entries, selection_options(cli, cwd))
+}
+
+// size_ordered_selection resolves the selection and measures every candidate
+// before applying --sort size.
+fn size_ordered_selection(store Store, entries []Entry, cli Cli, cwd string) ![]Entry {
+	opts := selection_options(cli, cwd)
+	candidates := resolve_selection(entries, SelectionOptions{
+		targets:            opts.targets
+		all:                opts.all
+		recursive:          opts.recursive
+		kind:               opts.kind
+		grep:               opts.grep
+		older_than_seconds: opts.older_than_seconds
+		keep:               opts.keep
+		cwd:                opts.cwd
+	})!
+	measured := store.fill_sizes(candidates)
+	return filter_entries(measured, ListFilter{
+		all:                true
+		kind:               opts.kind
+		grep:               opts.grep
+		older_than_seconds: opts.older_than_seconds
+		sort:               opts.sort
+		limit:              opts.limit
+	})
+}
+
 fn run_restore(store Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
 	cwd := canonical_path(os.getwd())
-	mut selected := resolve_selection(scan.entries, selection_options(cli, cwd))!
+	mut selected := select_entries(store, scan.entries, cli, cwd)!
 	if selected.len == 0 {
 		if cli.json {
 			println('[]')
@@ -224,7 +263,7 @@ fn run_empty(store Store, cli Cli) ! {
 	if empty_whole_trash(cli) && !cli.dry_run {
 		return run_empty_whole(store, cli, cwd)
 	}
-	mut selected := resolve_selection(scan.entries, selection_options(cli, cwd))!
+	mut selected := select_entries(store, scan.entries, cli, cwd)!
 	if selected.len == 0 {
 		if cli.json {
 			if cli.dry_run {
@@ -325,19 +364,20 @@ fn run_empty_whole(store Store, cli Cli, cwd string) ! {
 fn run_where(store Store, cli Cli) ! {
 	stats := store.stats()
 	report := WhereReport{
-		root:   store.root
-		items:  stats.items
-		broken: stats.broken
-		size:   stats.size
-		oldest: stats.oldest
-		newest: stats.newest
+		root:    store.root
+		items:   stats.items
+		broken:  stats.broken
+		size:    stats.size
+		unknown: stats.unknown
+		oldest:  stats.oldest
+		newest:  stats.newest
 	}
 	if cli.json {
 		println(json2.encode(report, escape_unicode: true))
 		return
 	}
 	println('${report.root}')
-	println('${report.items} item(s), ${format.format_size(report.size)}')
+	println('${report.items} item(s), ${format.format_size(report.size)}${unknown_suffix(report.unknown)}')
 	if report.oldest != '' {
 		println('oldest ${format.format_time(time.parse(report.oldest) or { time.now() })}  newest ${format.format_time(time.parse(report.newest) or { time.now() })}')
 	}
@@ -357,10 +397,13 @@ fn run_doctor(store Store, cli Cli) ! {
 	}
 	if report.broken == 0 {
 		println('No broken items found.')
-		return
+	} else {
+		for item in report.items {
+			println('${format.short_id(item.id)}  ${item.reason}  [${item.action}]')
+		}
+		println('${report.broken} broken item(s), ${report.repaired} repaired, ${report.purged} purged.')
 	}
-	for item in report.items {
-		println('${format.short_id(item.id)}  ${item.reason}  [${item.action}]')
+	if cli.doctor_repair {
+		println('${report.sized} size(s) measured, ${report.unknown} size(s) unknown.')
 	}
-	println('${report.broken} broken item(s), ${report.repaired} repaired, ${report.purged} purged.')
 }

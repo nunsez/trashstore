@@ -53,7 +53,9 @@ fn state_from_label(label string) !EntryState {
 	}
 }
 
-// Entry is the public view of one item stored in the trash.
+// Entry is the public view of one item stored in the trash. size is only
+// meaningful when size_known is true; unknown sizes are measured lazily and
+// persisted by fill_size().
 pub struct Entry {
 pub mut:
 	id            string
@@ -61,6 +63,7 @@ pub mut:
 	trashed_at    time.Time
 	kind          EntryKind
 	size          u64
+	size_known    bool
 	state         EntryState
 }
 
@@ -73,6 +76,7 @@ pub mut:
 	trashed_at    string
 	kind          string
 	size          u64
+	size_known    bool
 	restore_to    string
 	data_dev      i64
 	data_ino      u64
@@ -90,13 +94,29 @@ fn (m Meta) to_entry() !Entry {
 	if !original_path.starts_with('/') {
 		return error('invalid original_path for item `${m.id}`: path is not absolute')
 	}
+	kind := kind_from_label(m.kind)!
 	return Entry{
 		id:            m.id
 		original_path: original_path
 		trashed_at:    trashed_at
-		kind:          kind_from_label(m.kind)!
+		kind:          kind
 		size:          m.size
+		size_known:    size_is_known(m)
 		state:         state_from_label(m.state)!
+	}
+}
+
+// size_is_known decides whether a stored size can be trusted. Metadata written
+// before the size_known field existed carries exact sizes for files with a
+// non-zero size and nothing useful for directories.
+fn size_is_known(m Meta) bool {
+	if m.size_known {
+		return true
+	}
+	return match m.kind {
+		'file' { m.size > 0 }
+		'symlink', 'other' { true }
+		else { false }
 	}
 }
 
@@ -108,6 +128,7 @@ fn meta_from_entry(e Entry, restore_to string) Meta {
 		trashed_at:    e.trashed_at.format_rfc3339()
 		kind:          e.kind.label()
 		size:          e.size
+		size_known:    e.size_known
 		restore_to:    percent_encode_path(restore_to)
 	}
 }

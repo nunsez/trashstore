@@ -498,6 +498,7 @@ fn table_test_entries() []Entry {
 			trashed_at:    now.add(-2 * time.hour)
 			kind:          .file
 			size:          12 * 1024
+			size_known:    true
 			state:         .trashed
 		},
 		Entry{
@@ -514,6 +515,7 @@ fn table_test_entries() []Entry {
 			trashed_at:    now.add(-360 * 24 * time.hour)
 			kind:          .file
 			size:          900
+			size_known:    true
 			state:         .trashed
 		},
 	]
@@ -550,6 +552,7 @@ fn test_table_wide_size_keeps_columns() {
 		trashed_at:    time.now().add(-90 * time.second)
 		kind:          .file
 		size:          u64(1024) * 1024 * 1024 * 1024
+		size_known:    true
 		state:         .trashed
 	}
 	lines := table_lines(entries, '/tmp/t', false, Palette{})
@@ -600,4 +603,108 @@ fn test_parse_rejects_removed_quiet_flag() {
 	mut failed := false
 	Cli.parse(['trash', 'list', '--quiet']) or { failed = true }
 	assert failed
+}
+
+fn test_parse_rejects_no_size_with_sort_size() {
+	mut failed := false
+	Cli.parse(['trash', 'list', '--no-size', '--sort', 'size']) or { failed = true }
+	assert failed
+}
+
+fn test_parse_rejects_no_size_outside_list() {
+	mut failed := false
+	Cli.parse(['trash', 'where', '--no-size']) or { failed = true }
+	assert failed
+}
+
+fn test_run_list_no_size_keeps_sizes_unknown() {
+	root := cli_dir('list_no_size')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'hello')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	store := open(store_path) or { panic(err) }
+	id := store.list()[0].id
+	assert !store.read_entry(id)!.size_known
+
+	cli_run(['trash', '--store', store_path, 'list', '--all', '--no-size']) or { panic(err) }
+	assert !store.read_entry(id)!.size_known
+}
+
+fn test_run_list_measures_unknown_sizes() {
+	$if !windows {
+		root := cli_dir('list_sizes')
+		defer {
+			cli_cleanup(root)
+		}
+		store_path := os.join_path(root, 'trash')
+		dir := os.join_path(root, 'tree')
+		cli_write(os.join_path(dir, 'a.txt'), '12345')
+		cli_write(os.join_path(dir, 'sub', 'b.txt'), '123')
+		cli_run(['trash', '--store', store_path, '-r', dir]) or { panic(err) }
+		store := open(store_path) or { panic(err) }
+		id := store.list()[0].id
+		assert !store.read_entry(id)!.size_known
+
+		cli_run(['trash', '--store', store_path, 'list', '--all']) or { panic(err) }
+		entry := store.read_entry(id)!
+		assert entry.size_known
+		assert entry.size == 8
+		assert store.stats().unknown == 0
+	}
+}
+
+fn test_run_doctor_repair_measures_sizes() {
+	root := cli_dir('doctor_sizes')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'hello')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	store := open(store_path) or { panic(err) }
+	assert store.stats().unknown == 1
+
+	cli_run(['trash', '--store', store_path, 'doctor', '--repair']) or { panic(err) }
+	assert store.stats().unknown == 0
+	assert store.stats().size == 5
+}
+
+fn test_table_shows_known_directory_size() {
+	entries := [
+		Entry{
+			id:            '01a20888-4032-7600-a8eb-2a3b7cb182b1'
+			original_path: '/tmp/t/build'
+			trashed_at:    time.now().add(-5 * 24 * time.hour)
+			kind:          .dir
+			size:          2048
+			size_known:    true
+			state:         .trashed
+		},
+	]
+	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	assert lines[1].contains('2 KiB')
+}
+
+fn test_run_restore_sort_size_measures_before_sorting() {
+	root := cli_dir('restore_sort_size')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	small := os.join_path(root, 'small.txt')
+	big := os.join_path(root, 'big.txt')
+	cli_write(small, '1')
+	cli_write(big, '1234567890')
+	cli_run(['trash', '--store', store_path, small, big]) or { panic(err) }
+
+	cli_run(['trash', '--store', store_path, 'restore', '--all', '--sort', 'size', '--limit', '1']) or {
+		panic(err)
+	}
+	assert os.exists(big)
+	assert !os.exists(small)
 }

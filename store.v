@@ -408,6 +408,10 @@ fn (s Store) recover_locked() !RecoveryReport {
 				s.recover_empty(id)!
 				report.recovered++
 			}
+			'size' {
+				// An interrupted size measurement leaves the item valid; the size
+				// is measured again on demand.
+			}
 			else {
 				report.warnings << 'removed unknown marker `${name}`'
 			}
@@ -563,6 +567,8 @@ pub mut:
 	broken   int
 	repaired int
 	purged   int
+	sized    int
+	unknown  int
 	items    []DoctorItem
 }
 
@@ -601,10 +607,14 @@ fn (s Store) repair_broken_meta(id string) string {
 				fixed.trashed_at = s.clock().format_rfc3339()
 				changed = true
 			}
-			if fixed.kind == 'file' && fixed.size == 0 {
-				if st := os.lstat(data) {
-					fixed.size = st.size
-					changed = true
+			if !fixed.size_known {
+				if kind := kind_from_label(fixed.kind) {
+					size, ok := measure_path(data, kind)
+					if ok {
+						fixed.size = size
+						fixed.size_known = true
+						changed = true
+					}
 				}
 			}
 		} else {
@@ -612,15 +622,7 @@ fn (s Store) repair_broken_meta(id string) string {
 		}
 	} else if has_data {
 		kind := detect_kind(data)
-		size := if kind == .file {
-			if st := os.lstat(data) {
-				st.size
-			} else {
-				u64(0)
-			}
-		} else {
-			u64(0)
-		}
+		size, size_ok := measure_path(data, kind)
 		fixed = Meta{
 			id:            id
 			state:         'trashed'
@@ -628,6 +630,7 @@ fn (s Store) repair_broken_meta(id string) string {
 			trashed_at:    s.clock().format_rfc3339()
 			kind:          kind.label()
 			size:          size
+			size_known:    size_ok
 		}
 		changed = true
 	}
@@ -674,6 +677,18 @@ pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
 			id:     broken.id
 			reason: broken.reason
 			action: action
+		}
+	}
+	if opts.repair {
+		for entry in scan.entries {
+			if entry.size_known {
+				continue
+			}
+			if s.fill_size(entry).size_known {
+				report.sized++
+			} else {
+				report.unknown++
+			}
 		}
 	}
 	if report.purged > 0 {

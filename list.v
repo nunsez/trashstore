@@ -145,9 +145,22 @@ pub fn filter_entries(entries []Entry, filter ListFilter) []Entry {
 }
 
 // list returns trashed items, optionally limited to the current directory or
-// its subtree.
+// its subtree. Ordering by size measures every candidate first, because sizes
+// are filled lazily.
 pub fn (s Store) list(filter ListFilter) []Entry {
-	return filter_entries(s.scan().entries, filter)
+	entries := s.scan().entries
+	if filter.sort != 'size' {
+		return filter_entries(entries, filter)
+	}
+	candidates := filter_entries(entries, ListFilter{
+		cwd:                filter.cwd
+		recursive:          filter.recursive
+		all:                filter.all
+		kind:               filter.kind
+		grep:               filter.grep
+		older_than_seconds: filter.older_than_seconds
+	})
+	return filter_entries(s.fill_sizes(candidates), filter)
 }
 
 // find_in resolves an item by full id, short id (as shown by `trash list`),
@@ -223,19 +236,26 @@ pub fn (s Store) latest() !Entry {
 
 pub struct StoreStats {
 pub:
-	items  int
-	broken int
-	size   u64
-	oldest string
-	newest string
+	items   int
+	broken  int
+	size    u64
+	unknown int
+	oldest  string
+	newest  string
 }
 
-// stats returns aggregate information with one store scan.
+// stats returns aggregate information with one store scan. size sums the known
+// sizes only; unknown counts the items whose size was not measured yet.
 pub fn (s Store) stats() StoreStats {
 	scan := s.scan()
 	mut size := u64(0)
+	mut unknown := 0
 	for entry in scan.entries {
-		size += entry.size
+		if entry.size_known {
+			size += entry.size
+		} else {
+			unknown++
+		}
 	}
 	mut oldest := ''
 	mut newest := ''
@@ -244,10 +264,11 @@ pub fn (s Store) stats() StoreStats {
 		newest = scan.entries[0].trashed_at.format_rfc3339()
 	}
 	return StoreStats{
-		items:  scan.entries.len + scan.broken.len
-		broken: scan.broken.len
-		size:   size
-		oldest: oldest
-		newest: newest
+		items:   scan.entries.len + scan.broken.len
+		broken:  scan.broken.len
+		size:    size
+		unknown: unknown
+		oldest:  oldest
+		newest:  newest
 	}
 }

@@ -67,12 +67,10 @@ pub fn (s Store) plan_put(path string, opts PutOptions) !Entry {
 	}
 	check_trash_target(target, s.root, canonical_path(os.getwd()))!
 
-	st := os.lstat(target)!
-	size := if kind == .file { st.size } else { u64(0) }
+	// The size is measured lazily from the payload once it is in the trash.
 	return Entry{
 		original_path: target
 		kind:          kind
-		size:          size
 		state:         .pending
 	}
 }
