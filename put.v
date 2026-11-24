@@ -55,7 +55,8 @@ fn (s Store) create_item_dir_opts(sync bool) !(string, string) {
 }
 
 // plan_put validates a target and returns the entry that put() would create.
-// It is used by --dry-run and by -i before asking for confirmation.
+// It is used by put_many() and by --preview / -i/--interactive before asking
+// for confirmation.
 pub fn (s Store) plan_put(path string, opts PutOptions) !Entry {
 	target := canonical_target_path(path)
 	if !os.exists(target) && !os.is_link(target) {

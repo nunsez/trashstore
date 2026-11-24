@@ -29,7 +29,6 @@ complete -c trash -n "__fish_seen_subcommand_from restore" -l kind -r -d 'Filter
 complete -c trash -n "__fish_seen_subcommand_from restore" -l grep -r -d 'Filter path'
 complete -c trash -n "__fish_seen_subcommand_from restore" -l older-than -r -d 'Minimum age'
 complete -c trash -n "__fish_seen_subcommand_from restore" -s i -l interactive -d 'Choose items'
-complete -c trash -n "__fish_seen_subcommand_from restore" -l dry-run -d 'Show plan'
 complete -c trash -n "__fish_seen_subcommand_from restore" -l json -d 'JSON output'
 complete -c trash -n "__fish_seen_subcommand_from restore" -s y -l yes -d 'Skip confirmation'
 
@@ -42,7 +41,6 @@ complete -c trash -n "__fish_seen_subcommand_from empty" -l kind -r -d 'Filter k
 complete -c trash -n "__fish_seen_subcommand_from empty" -l grep -r -d 'Filter path'
 complete -c trash -n "__fish_seen_subcommand_from empty" -l older-than -r -d 'Minimum age'
 complete -c trash -n "__fish_seen_subcommand_from empty" -s i -l interactive -d 'Choose items'
-complete -c trash -n "__fish_seen_subcommand_from empty" -l dry-run -d 'Show plan'
 complete -c trash -n "__fish_seen_subcommand_from empty" -l wait -d 'Wait for GC'
 complete -c trash -n "__fish_seen_subcommand_from empty" -l include-broken -d 'Also delete broken items'
 complete -c trash -n "__fish_seen_subcommand_from empty" -l json -d 'JSON output'
@@ -66,5 +64,5 @@ complete -c trash -n "__fish_seen_subcommand_from doctor" -l json -d 'JSON outpu
 complete -c trash -n "__fish_seen_subcommand_from put; or not __fish_seen_subcommand_from $commands" -s r -l recursive -d 'Allow directories'
 complete -c trash -n "__fish_seen_subcommand_from put; or not __fish_seen_subcommand_from $commands" -l preview -d 'Preview and confirm'
 complete -c trash -n "__fish_seen_subcommand_from put; or not __fish_seen_subcommand_from $commands" -s i -l interactive -d 'Confirm each file'
-complete -c trash -n "__fish_seen_subcommand_from put; or not __fish_seen_subcommand_from $commands" -l dry-run -d 'Show plan'
+complete -c trash -n "__fish_seen_subcommand_from put; or not __fish_seen_subcommand_from $commands" -s f -l force -d 'Ignore missing targets'
 complete -c trash -n "__fish_seen_subcommand_from put; or not __fish_seen_subcommand_from $commands" -s y -l yes -d 'Assume yes'

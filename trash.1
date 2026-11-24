@@ -79,6 +79,10 @@ Required to trash a directory. With \fBlist\fR, \fBrestore\fR,
 \fBempty\fR, or \fBwhere\fR, include the current directory subtree, or the
 subtree of a directory target.
 .TP
+.B \-f, \-\-force
+With \fBput\fR, silently ignore targets that do not exist. Unlike
+\fBrm -f\fR, it does not skip confirmation prompts; use \fB--yes\fR for that.
+.TP
 .B \-\-preview
 With \fBput\fR, show a preview and ask for confirmation before trashing.
 .TP
@@ -86,9 +90,6 @@ With \fBput\fR, show a preview and ask for confirmation before trashing.
 With \fBput\fR, confirm each file before trashing. With \fBrestore\fR or
 \fBempty\fR, choose items interactively with multi-select syntax such as
 \fB1,3-5\fR, \fBa\fR for all, or \fBq\fR to quit.
-.TP
-.B \-\-dry\-run
-Show what would happen without changing anything.
 .TP
 .B \-y, \-\-yes
 Do not ask for confirmation. Required for non-interactive multi-item
@@ -265,8 +266,6 @@ trash restore --all --limit 1
 trash empty --all --yes
 .PP
 trash empty --older-than 30d --keep 5 --yes
-.PP
-trash empty --all --dry-run
 .PP
 trash doctor --repair
 .SH SEE ALSO

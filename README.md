@@ -22,7 +22,7 @@ non-interactive `Store` API.
 - `list --ids` prints one full id per line, so `trash list ... --ids | trash
   where` locates a filtered selection without parsing a table.
 - Batch operations keep successful results and report per-item failures.
-- `--dry-run`, `--json`, and `--yes` for scripting.
+- `--json` and `--yes` for scripting.
 - `doctor` finds and optionally repairs broken items.
 
 ## Build
@@ -48,8 +48,11 @@ install -m 644 completions/trash.fish /usr/local/share/fish/vendor_completions.d
 trash report.txt old-dir/another-file
 trash -r build/
 
-# Preview without changing anything
-trash --dry-run report.txt
+# Preview a file and confirm before trashing it
+trash --preview report.txt
+
+# Ignore targets that no longer exist
+trash -f already-gone.txt
 
 # List items from the current directory, its subtree, or the whole store
 trash list
@@ -146,7 +149,7 @@ exit status. The main shapes are:
 
 - `list` → `{ id, original_path, deleted_at, kind, size, size_known }[]`
 - `restore` → `{ id, original_path, restored_to }[]`
-- `empty` → `{ emptied, dry_run }` (plus `items` with `--dry-run`)
+- `empty` → `{ emptied }`
 - `where` → `{ id, location }[]`
 - `stats` → `{ root, items, broken, size, unknown, oldest, newest }`
 - `doctor` → `{ broken, repaired, purged, sized, unknown, integrity, backup, rebuilt, compacted, reindexed, items: [{ id, reason, action }] }`

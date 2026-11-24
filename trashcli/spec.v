@@ -12,7 +12,7 @@ enum FlagKind {
 	recursive
 	preview
 	interactive
-	dry_run
+	force
 	yes
 	all
 	json
@@ -152,10 +152,11 @@ fn flag_specs() []FlagSpec {
 			help:     'Choose items interactively'
 		},
 		FlagSpec{
-			kind:     .dry_run
-			long:     'dry-run'
-			commands: [.put, .restore, .empty]
-			help:     'Show what would happen without changing anything'
+			kind:     .force
+			long:     'force'
+			short:    'f'
+			commands: [.put]
+			help:     'Ignore targets that do not exist'
 		},
 		FlagSpec{
 			kind:     .yes
@@ -359,8 +360,7 @@ fn command_specs() []CommandSpec {
 			usage:       'trash [put] [OPTIONS] <path>...'
 			summary:     'Move files to the trash (default when no command is given)'
 			description: 'Moves files and directories to the trash.'
-			examples:    ['trash report.txt', 'trash -r build/', 'trash --preview report.txt',
-				'trash --dry-run report.txt']
+			examples:    ['trash report.txt', 'trash -r build/', 'trash --preview report.txt']
 		},
 		CommandSpec{
 			cmd:         .list

@@ -9,13 +9,6 @@ import trash
 
 struct EmptyReport {
 	emptied int
-	dry_run bool
-}
-
-struct EmptyPlan {
-	emptied int
-	dry_run bool
-	items   []JsonEntry
 }
 
 struct StatsReport {
@@ -46,6 +39,18 @@ pub fn run(cli Cli) ! {
 			return
 		}
 		else {}
+	}
+	if cli.command == .put && cli.force {
+		mut any_target := false
+		for target in cli.targets {
+			if os.exists(target) || os.is_link(target) {
+				any_target = true
+				break
+			}
+		}
+		if !any_target {
+			return
+		}
 	}
 
 	store_path := resolve_store(cli.store)!
@@ -82,7 +87,7 @@ fn warn_broken(broken []trash.BrokenItem, cli Cli) {
 
 fn run_put(store trash.Store, cli Cli) ! {
 	interactive := cli.preview || cli.interactive
-	if !cli.dry_run && !interactive {
+	if !interactive {
 		batch := store.put_many(cli.targets, recursive: cli.recursive)!
 		if cli.verbose {
 			for entry in batch.entries {
@@ -92,27 +97,31 @@ fn run_put(store trash.Store, cli Cli) ! {
 		if batch.failures.len > 0 {
 			mut failures := []string{}
 			for failure in batch.failures {
+				if cli.force && failure.kind == .not_found {
+					continue
+				}
 				failures << 'Failed to trash ${failure.subject}: ${failure.message}'
 			}
-			return error(failures.join('\n'))
+			if failures.len > 0 {
+				return error(failures.join('\n'))
+			}
 		}
 		return
 	}
-	if interactive && !cli.yes && !cli.dry_run && os.is_atty(0) == 0 {
+	if interactive && !cli.yes && os.is_atty(0) == 0 {
 		return error('-i/--interactive requires a terminal; use --yes to skip the prompt')
 	}
 	mut failures := []string{}
 	for target in cli.targets {
 		planned := store.plan_put(target, recursive: cli.recursive) or {
+			if cli.force && err is trash.TrashError && err.kind == .not_found {
+				continue
+			}
 			failures << 'Failed to trash ${target}: ${err.msg()}'
 			continue
 		}
 		if interactive {
 			print_preview_info(planned.original_path)
-		}
-		if cli.dry_run {
-			println('Would trash ${planned.original_path}')
-			continue
 		}
 		if interactive && !cli.yes {
 			ans := os.input('Send ${planned.original_path} to the trash? (y/n) ').trim_space().to_lower()
@@ -121,6 +130,9 @@ fn run_put(store trash.Store, cli Cli) ! {
 			}
 		}
 		entry := store.put(target, recursive: cli.recursive) or {
+			if cli.force && err is trash.TrashError && err.kind == .not_found {
+				continue
+			}
 			failures << 'Failed to trash ${target}: ${err.msg()}'
 			continue
 		}
@@ -194,25 +206,6 @@ fn run_restore(store trash.Store, cli Cli) ! {
 			return
 		}
 	}
-	if cli.dry_run {
-		mut plans := []RestorePlan{}
-		mut reserved := map[string]bool{}
-		for entry in selected {
-			target := planned_restore_target(entry.original_path, mut reserved)
-			plans << RestorePlan{
-				id:            entry.id
-				original_path: entry.original_path
-				restored_to:   target
-			}
-			if !cli.json {
-				println('Would restore ${entry.original_path} -> ${target}')
-			}
-		}
-		if cli.json {
-			println(json2.encode(plans, escape_unicode: true))
-		}
-		return
-	}
 	if !confirm_action(selected.len, 'Restore', selection_scope(cli, cwd), cli, false)! {
 		println('Aborted.')
 		return
@@ -251,17 +244,7 @@ fn run_empty(store trash.Store, cli Cli) ! {
 	broken_targets := if cli.include_broken { scan.broken.len } else { 0 }
 	if selected.len == 0 && broken_targets == 0 {
 		if cli.json {
-			if cli.dry_run {
-				println(json2.encode(EmptyPlan{
-					emptied: 0
-					dry_run: true
-					items:   []JsonEntry{}
-				}, escape_unicode: true))
-			} else {
-				println(json2.encode(EmptyReport{ emptied: 0, dry_run: false },
-					escape_unicode: true
-				))
-			}
+			println(json2.encode(EmptyReport{ emptied: 0 }, escape_unicode: true))
 		} else {
 			if cli.all {
 				println('Trash is empty.')
@@ -276,25 +259,6 @@ fn run_empty(store trash.Store, cli Cli) ! {
 		if selected.len == 0 {
 			return
 		}
-	}
-	if cli.dry_run {
-		if cli.json {
-			println(json2.encode(EmptyPlan{
-				emptied: selected.len
-				dry_run: true
-				items:   json_entries(selected)
-			}, escape_unicode: true))
-		} else {
-			for entry in selected {
-				println('Would permanently delete ${entry.original_path}')
-			}
-			if broken_targets > 0 {
-				println('Would permanently delete ${broken_targets} broken item(s).')
-			}
-			total := selected.len + broken_targets
-			println('Would permanently delete ${total} item(s)${selection_scope(cli, cwd)}.')
-		}
-		return
 	}
 	total := selected.len + broken_targets
 	if !confirm_action(total, 'Permanently delete', selection_scope(cli, cwd), cli, true)! {
@@ -314,10 +278,7 @@ fn run_empty(store trash.Store, cli Cli) ! {
 		store.gc()!
 	}
 	if cli.json {
-		println(json2.encode(EmptyReport{
-			emptied: batch.emptied
-			dry_run: false
-		}, escape_unicode: true))
+		println(json2.encode(EmptyReport{ emptied: batch.emptied }, escape_unicode: true))
 	} else {
 		println('Permanently deleted ${batch.emptied} item(s).')
 	}
@@ -470,26 +431,6 @@ fn run_doctor(store trash.Store, cli Cli) ! {
 	if cli.doctor_repair {
 		println('${report.sized} size(s) measured, ${report.unknown} size(s) unknown.')
 	}
-}
-
-// planned_restore_target mirrors resolve_name_conflict for a dry run: it also
-// skips targets that earlier plans in the same run have already claimed, so the
-// printed plan matches what restore_batch will actually do.
-fn planned_restore_target(base string, mut reserved map[string]bool) string {
-	if !os.exists(base) && !os.is_link(base) && !reserved[base] {
-		reserved[base] = true
-		return base
-	}
-	mut counter := 1
-	for {
-		candidate := '${base}~${counter}'
-		if !os.exists(candidate) && !os.is_link(candidate) && !reserved[candidate] {
-			reserved[candidate] = true
-			return candidate
-		}
-		counter++
-	}
-	return base
 }
 
 fn open_store_or_reset(path string, cli Cli) !trash.Store {

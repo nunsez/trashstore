@@ -47,7 +47,7 @@ _trash() {
                         '--kind[filter kind]:kind:(file dir symlink other)' \
                         '--grep[filter path]:pattern:' '--older-than[minimum age]:age:' \
                         '(-i --interactive)'{-i,--interactive}'[choose items]' \
-                        '--dry-run[show plan]' '--json[JSON output]' '-y[skip confirmation]' '--yes[skip confirmation]'
+                        '--json[JSON output]' '-y[skip confirmation]' '--yes[skip confirmation]'
                     ;;
                 empty)
                     _arguments '(-r --recursive)'{-r,--recursive}'[include subtree]' \
@@ -56,7 +56,7 @@ _trash() {
                         '--kind[filter kind]:kind:(file dir symlink other)' \
                         '--grep[filter path]:pattern:' '--older-than[minimum age]:age:' \
                         '(-i --interactive)'{-i,--interactive}'[choose items]' \
-                        '--dry-run[show plan]' '--json[JSON output]' '-y[skip confirmation]' '--yes[skip confirmation]' \
+                        '--json[JSON output]' '-y[skip confirmation]' '--yes[skip confirmation]' \
                         '--wait[wait for GC]'
                     ;;
                 where)
@@ -75,7 +75,8 @@ _trash() {
                     _arguments '(-r --recursive)'{-r,--recursive}'[allow directories]' \
                         '--preview[preview and confirm]' \
                         '(-i --interactive)'{-i,--interactive}'[confirm each file]' \
-                        '--dry-run[show plan]' '-y[assume yes]' '--yes[assume yes]' '*:file:_files'
+                        '(-f --force)'{-f,--force}'[ignore missing targets]' \
+                        '-y[assume yes]' '--yes[assume yes]' '*:file:_files'
                     ;;
             esac
             ;;

@@ -15,10 +15,10 @@ _trash() {
             COMPREPLY=( $(compgen -W "--recursive --all --json --long --full-id --ids --limit --sort --kind --grep --older-than --no-size $global_opts" -- "$cur") )
             ;;
         restore)
-            COMPREPLY=( $(compgen -W "--recursive --all --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --all --limit --sort --kind --grep --older-than --interactive --json --yes $global_opts" -- "$cur") )
             ;;
         empty)
-            COMPREPLY=( $(compgen -W "--recursive --all --keep --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes --wait --include-broken $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --all --keep --limit --sort --kind --grep --older-than --interactive --json --yes --wait --include-broken $global_opts" -- "$cur") )
             ;;
         where)
             COMPREPLY=( $(compgen -W "--recursive --kind --grep --older-than --json $global_opts" -- "$cur") )
@@ -30,7 +30,7 @@ _trash() {
             COMPREPLY=( $(compgen -W "--repair --doctor-purge --integrity-check --compact --backup --rebuild --reindex --json $global_opts" -- "$cur") )
             ;;
         put|*)
-            COMPREPLY=( $(compgen -W "--recursive --preview --interactive --dry-run --yes $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --preview --interactive --force --yes $global_opts" -- "$cur") )
             _filedir
             ;;
     esac

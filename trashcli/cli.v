@@ -59,7 +59,7 @@ pub mut:
 	recursive          bool
 	preview            bool
 	interactive        bool
-	dry_run            bool
+	force              bool
 	yes                bool
 	long               bool
 	ids                bool
@@ -238,7 +238,7 @@ fn (mut cli Cli) apply(spec FlagSpec, value string) ! {
 		.recursive { cli.recursive = true }
 		.preview { cli.preview = true }
 		.interactive { cli.interactive = true }
-		.dry_run { cli.dry_run = true }
+		.force { cli.force = true }
 		.yes { cli.yes = true }
 		.all { cli.all = true }
 		.json { cli.json = true }
@@ -315,7 +315,7 @@ fn (cli Cli) validate(table FlagTable) ! {
 	}
 	match cli.command {
 		.put {
-			if cli.targets.len == 0 {
+			if cli.targets.len == 0 && !cli.force {
 				return error('no files or directories specified\nhint: run `trash help put`')
 			}
 		}

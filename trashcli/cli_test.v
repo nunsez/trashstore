@@ -208,6 +208,35 @@ fn test_run_returns_error_for_missing_target() {
 	assert failed
 }
 
+fn test_run_force_ignores_missing_target() {
+	root := cli_dir('run_force')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	missing := os.join_path(root, 'missing')
+	cli_run(['trash', '--store', store_path, '-f', missing]) or { panic(err) }
+	assert !os.exists(store_path)
+	store := trash.open(store_path) or { panic(err) }
+	assert store.list().len == 0
+
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'x')
+	cli_run(['trash', '--store', store_path, '--force', missing, file]) or { panic(err) }
+	assert !os.exists(file)
+	assert store.list().len == 1
+}
+
+fn test_run_force_without_targets_is_noop() {
+	root := cli_dir('run_force_noop')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	cli_run(['trash', '--store', store_path, '-f']) or { panic(err) }
+	assert !os.exists(store_path)
+}
+
 fn test_run_put_and_restore() {
 	root := cli_dir('run_put')
 	defer {
@@ -347,20 +376,6 @@ fn test_run_restore_by_prefix() {
 	id := store.list()[0].id
 	cli_run(['trash', '--store', store_path, 'restore', id[..8]]) or { panic(err) }
 	assert os.exists(file)
-}
-
-fn test_run_dry_run_does_not_move() {
-	root := cli_dir('run_dry')
-	defer {
-		cli_cleanup(root)
-	}
-	store_path := os.join_path(root, 'trash')
-	file := os.join_path(root, 'a.txt')
-	cli_write(file, 'x')
-	cli_run(['trash', '--store', store_path, '--dry-run', file]) or { panic(err) }
-	assert os.exists(file)
-	store := trash.open(store_path) or { panic(err) }
-	assert store.list().len == 0
 }
 
 fn test_run_stats() {
@@ -1108,22 +1123,6 @@ fn test_parse_doctor_maintenance_flags() {
 	mut failed := false
 	Cli.parse(['trash', 'list', '--compact']) or { failed = true }
 	assert failed
-}
-
-fn test_planned_restore_targets_avoid_each_other() {
-	root := cli_dir('planned_targets')
-	defer {
-		cli_cleanup(root)
-	}
-	base := os.join_path(root, 'a.txt')
-	mut reserved := map[string]bool{}
-	assert planned_restore_target(base, mut reserved) == base
-	assert planned_restore_target(base, mut reserved) == '${base}~1'
-	assert planned_restore_target(base, mut reserved) == '${base}~2'
-
-	cli_write(base, 'x')
-	mut reserved_existing := map[string]bool{}
-	assert planned_restore_target(base, mut reserved_existing) == '${base}~1'
 }
 
 fn test_flag_presence_is_validated_not_value() {
