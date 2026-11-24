@@ -2198,6 +2198,41 @@ fn test_recovery_continues_after_item_error() {
 	}
 }
 
+// regression: P0-6 — an unknown on-disk state is broken, never pending_empty.
+fn test_unknown_index_state_is_broken_not_pending_empty() {
+	root := core_dir('unknown_state')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	id := 'unknown-state'
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'keep')
+	core_insert(store, id, .trashed, os.join_path(root, 'a.txt'))
+	mut db := store.db
+	// The schema CHECK constraint rejects state=99, so simulate a corrupt or
+	// future index row by bypassing it for this update.
+	db.exec('PRAGMA ignore_check_constraints = ON')!
+	db.exec("UPDATE items SET state = 99 WHERE id = '${id}'")!
+	db.exec('PRAGMA ignore_check_constraints = OFF')!
+
+	scan := store.scan()
+	assert scan.entries.len == 0
+	assert scan.broken.len == 1
+	assert scan.broken[0].id == id
+	assert scan.broken[0].reason.contains('unknown')
+
+	report := store.recover() or { panic(err) }
+	assert report.recovered == 0
+	assert report.warnings.len == 1
+	assert report.warnings[0].contains('unknown state')
+	// Nothing was moved into .gc and the payload is untouched.
+	garbage := os.ls(store.gc_dir()) or { []string{} }
+	assert garbage.len == 0
+	assert (os.read_file(store.data_path(id)) or { '' }) == 'keep'
+	assert store.get_item(id)!.state == .unknown
+}
+
 // regression: P0-1 — ids read from the index are never turned into paths.
 fn test_scan_and_recovery_reject_unsafe_index_ids() {
 	root := core_dir('unsafe_index_ids')

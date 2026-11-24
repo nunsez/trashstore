@@ -14,6 +14,10 @@ pub enum EntryState {
 	trashed
 	restoring
 	pending_empty
+	// unknown marks a state read from the index that this build does not
+	// recognise. It is never written; recovery and scan treat it as broken
+	// instead of guessing a destructive action.
+	unknown
 }
 
 // label returns the stable on-disk name for an entry kind.
@@ -33,6 +37,7 @@ pub fn (s EntryState) label() string {
 		.trashed { 'trashed' }
 		.restoring { 'restoring' }
 		.pending_empty { 'pending_empty' }
+		.unknown { 'unknown' }
 	}
 }
 

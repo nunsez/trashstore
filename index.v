@@ -65,7 +65,8 @@ fn index_state(value i64) EntryState {
 		0 { .pending }
 		1 { .trashed }
 		2 { .restoring }
-		else { .pending_empty }
+		3 { .pending_empty }
+		else { .unknown }
 	}
 }
 
