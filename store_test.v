@@ -446,9 +446,14 @@ fn test_reset_store_removes_only_store_entries() {
 	mut db := store.conn()!
 	db.exec('PRAGMA user_version = 99')!
 	db.close()
+	// Sidecars a crashed or interrupted SQLite operation can leave behind.
+	os.write_file(os.join_path(trash_path, 'index.db-journal'), 'journal') or { panic(err) }
+	os.write_file(os.join_path(trash_path, 'index.backup.db.tmp'), 'tmp') or { panic(err) }
 	reset_store(trash_path)!
 	assert !os.exists(store.items_dir())
 	assert !os.exists(store.index_path())
+	assert !os.exists(os.join_path(trash_path, 'index.db-journal'))
+	assert !os.exists(os.join_path(trash_path, 'index.backup.db.tmp'))
 	assert !os.exists(store.lock_path())
 	assert os.exists(keep)
 	store2 := open(trash_path) or { panic(err) }
@@ -1564,9 +1569,29 @@ fn test_open_with_can_refuse_creation() {
 	defer {
 		core_cleanup(root)
 	}
+	missing := os.join_path(root, 'missing')
 	mut failed := false
-	open_with(os.join_path(root, 'missing'), create: false) or { failed = true }
+	open_with(missing, create: false) or { failed = true }
 	assert failed
+	assert !os.exists(missing), 'create:false must not create the store directory'
+
+	// An existing directory that is not a complete store must not be
+	// initialized either.
+	os.mkdir(missing, mode: 0o700) or { panic(err) }
+	mut incomplete := false
+	open_with(missing, create: false) or { incomplete = true }
+	assert incomplete
+	assert !os.exists(os.join_path(missing, 'index.db'))
+	assert !os.exists(os.join_path(missing, 'items'))
+	assert !os.exists(os.join_path(missing, '.gc'))
+
+	// A complete store opens without being recreated.
+	store := open(missing) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	core_put(store, file, false)
+	again := open_with(missing, create: false) or { panic(err) }
+	assert again.list().len == 1
 }
 
 fn test_put_many_and_stats() {
@@ -2531,4 +2556,256 @@ fn test_doctor_purge_rejects_unsafe_generated_id() {
 	assert (store.get_item(id) or { panic(err) }).id == id
 	assert (os.read_file(store.data_path(id)) or { '' }) == 'precious'
 	assert !os.exists(os.join_path(root, 'escape'))
+}
+
+// regression: `--sort date` must use trashed_at, not id order, and break ties
+// by id so the result is deterministic for rebuilt or custom-clock stores.
+fn test_sort_date_uses_trashed_at_not_id() {
+	entries := [
+		Entry{
+			id:         'a-newest'
+			trashed_at: time.unix(3000)
+			kind:       .file
+		},
+		Entry{
+			id:         'z-oldest'
+			trashed_at: time.unix(1000)
+			kind:       .file
+		},
+		Entry{
+			id:         'm-middle'
+			trashed_at: time.unix(2000)
+			kind:       .file
+		},
+	]
+	sorted := sort_entries(entries, 'date')
+	assert sorted.map(it.id) == ['a-newest', 'm-middle', 'z-oldest']
+	tied := sort_entries([
+		Entry{
+			id:         'a'
+			trashed_at: time.unix(1000)
+		},
+		Entry{
+			id:         'b'
+			trashed_at: time.unix(1000)
+		},
+	], 'date')
+	assert tied.map(it.id) == ['b', 'a']
+}
+
+// regression: an id generator that returns a path traversal must not create
+// anything, and put must fail before the source file is touched.
+fn test_put_rejects_unsafe_generated_id() {
+	root := core_dir('put_unsafe_id')
+	defer {
+		core_cleanup(root)
+	}
+	store := open_with(os.join_path(root, 'trash'),
+		id_gen: fn () string {
+			return '../escape'
+		}
+	) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	mut failed := false
+	store.put(file, recursive: false) or { failed = true }
+	assert failed
+	assert os.exists(file)
+	assert store.list().len == 0
+	assert (os.ls(store.items_dir()) or { []string{} }).len == 0
+	assert !os.exists(os.join_path(root, 'escape'))
+}
+
+// regression: empty must validate the generated destination name before it
+// marks the row pending_empty or moves the payload.
+fn test_empty_rejects_unsafe_generated_id() {
+	root := core_dir('empty_unsafe_id')
+	defer {
+		core_cleanup(root)
+	}
+	store := open_with(os.join_path(root, 'trash'),
+		id_gen: fn () string {
+			return '../escape'
+		}
+	) or { panic(err) }
+	id := 'safe-item'
+	os.mkdir_all(store.item_dir(id)) or { panic(err) }
+	core_write(store.data_path(id), 'precious')
+	core_insert(store, id, .trashed, os.join_path(root, 'x'))
+	entry := store.get_item(id) or { panic(err) }.to_entry()
+
+	batch := store.empty_batch([entry]) or { panic(err) }
+	assert batch.failures.len == 1
+	assert batch.emptied == 0
+	assert (store.get_item(id) or { panic(err) }).state == .trashed
+	assert (os.read_file(store.data_path(id)) or { '' }) == 'precious'
+	assert !os.exists(os.join_path(root, 'escape'))
+}
+
+// regression: a partial empty must still collect .gc, otherwise successfully
+// removed payloads linger until some later command runs gc.
+fn test_empty_entries_collects_gc_after_partial_failure() {
+	$if !windows {
+		root := core_dir('empty_partial_gc')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		a := os.join_path(root, 'a.txt')
+		b := os.join_path(root, 'b.txt')
+		core_write(a, 'a')
+		core_write(b, 'b')
+		ea := core_put(store, a, false)
+		eb := core_put(store, b, false)
+		outside := os.join_path(root, 'outside')
+		os.mkdir_all(outside) or { panic(err) }
+		os.rmdir_all(store.item_dir(eb.id)) or { panic(err) }
+		os.symlink(outside, store.item_dir(eb.id)) or { panic(err) }
+
+		mut failed := false
+		store.empty_entries([ea, eb]) or { failed = true }
+		assert failed
+		assert !os.is_dir(store.item_dir(ea.id))
+		assert (store.get_item(eb.id) or { panic(err) }).id == eb.id
+		assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
+	}
+}
+
+// regression: a NUL in a path is rejected instead of being silently truncated
+// by the OS and stored as a different name.
+fn test_put_rejects_nul_in_path() {
+	root := core_dir('put_nul')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	bad := os.join_path(root, 'bad\x00name')
+	mut failed := false
+	store.put(bad, recursive: false) or { failed = true }
+	assert failed
+	assert store.list().len == 0
+	assert (os.ls(store.items_dir()) or { []string{} }).len == 0
+	assert canonical_target_path(bad) == ''
+}
+
+// regression: reset_store must take the exclusive store lock, so a concurrent
+// writer cannot recreate files halfway through the wipe.
+fn test_reset_store_waits_for_exclusive_lock() {
+	$if !windows {
+		root := core_dir('reset_lock')
+		defer {
+			core_cleanup(root)
+		}
+		trash_path := os.join_path(root, 'trash')
+		store := open(trash_path) or { panic(err) }
+		mut fl := store.lock_exclusive() or { panic(err) }
+		mut wg := sync.new_waitgroup()
+		wg.add(1)
+		spawn fn [trash_path, mut wg] () {
+			reset_store(trash_path) or {}
+			wg.done()
+		}()
+		time.sleep(150 * time.millisecond)
+		assert os.exists(store.index_path()), 'reset_store must block while the lock is held'
+		fl.release()
+		wg.wait()
+		assert !os.exists(store.index_path())
+	}
+}
+
+// regression: one row with an undecodable path must not hide every other item.
+fn test_corrupt_index_row_does_not_break_scan() {
+	root := core_dir('corrupt_row')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	good_file := os.join_path(root, 'good.txt')
+	core_write(good_file, 'good')
+	good := core_put(store, good_file, false)
+	// NUL is stored as %00, which percent_decode_path rejects.
+	store.insert_item(IndexItem{
+		id:            'corrupt-row'
+		original_path: '/tmp/bad\x00name'
+		trashed_at:    time.now()
+		kind:          .file
+		state:         .trashed
+	}) or { panic(err) }
+
+	scan := store.scan()
+	assert scan.entries.len == 1
+	assert scan.entries[0].id == good.id
+	assert scan.broken.len == 1
+	assert scan.broken[0].id == 'corrupt-row'
+	assert scan.broken[0].reason.contains('corrupt index row')
+	assert store.list().len == 1
+
+	mut get_failed := false
+	store.get_item('corrupt-row') or {
+		get_failed = true
+		assert err is TrashError
+		if err is TrashError {
+			assert err.kind == .io
+		}
+	}
+	assert get_failed
+
+	store.restore(good.id) or { panic(err) }
+	assert os.exists(good_file)
+	doc := store.doctor(purge: true) or { panic(err) }
+	assert doc.purged == 1
+	assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
+}
+
+// regression: public wrappers must keep the ErrorKind of the underlying
+// failure instead of returning a generic Error.
+fn test_public_wrappers_return_typed_errors() {
+	$if !windows {
+		root := core_dir('typed_errors')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		a := os.join_path(root, 'a.txt')
+		b := os.join_path(root, 'b.txt')
+		core_write(a, 'a')
+		core_write(b, 'b')
+		ea := core_put(store, a, false)
+		eb := core_put(store, b, false)
+		outside := os.join_path(root, 'outside')
+		os.mkdir_all(outside) or { panic(err) }
+		os.rmdir_all(store.item_dir(ea.id)) or { panic(err) }
+		os.symlink(outside, store.item_dir(ea.id)) or { panic(err) }
+
+		mut restore_failed := false
+		store.restore_entries([ea]) or {
+			restore_failed = true
+			assert err is TrashError
+			if err is TrashError {
+				assert err.kind == .invalid_target
+			}
+		}
+		assert restore_failed
+
+		mut empty_failed := false
+		store.empty_entries([ea, eb]) or {
+			empty_failed = true
+			assert err is TrashError
+			if err is TrashError {
+				assert err.kind == .invalid_target
+			}
+		}
+		assert empty_failed
+		assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
+
+		mut put_failed := false
+		store.put(os.join_path(root, 'missing'), recursive: false) or {
+			put_failed = true
+			assert err is TrashError
+			if err is TrashError {
+				assert err.kind == .not_found
+			}
+		}
+		assert put_failed
+	}
 }

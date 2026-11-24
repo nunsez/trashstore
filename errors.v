@@ -40,3 +40,24 @@ fn io_error(msg string) TrashError {
 fn schema_mismatch_error(msg string, path string) TrashError {
 	return errs.schema_mismatch_error(msg, path)
 }
+
+// classify_error turns an unclassified error from a public operation into a
+// TrashError, so callers can always use `err is TrashError` and inspect the
+// ErrorKind instead of parsing a message.
+fn classify_error(err IError, op string, subject string) TrashError {
+	if err is TrashError {
+		return err
+	}
+	return context_error(.io, op, subject, err)
+}
+
+// batch_failure_error preserves the classification of a per-item failure when a
+// batch API collapses to a single error.
+fn batch_failure_error(failure BatchFailure) TrashError {
+	return TrashError{
+		kind: failure.kind
+		msg:  failure.message
+		op:   failure.op
+		path: failure.subject
+	}
+}

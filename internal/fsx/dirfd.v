@@ -12,6 +12,10 @@ import os
 fn C.openat(dirfd int, path &char, flags int, ...int) int
 fn C.mkdirat(dirfd int, path &char, mode int) int
 fn C.unlinkat(dirfd int, path &char, flags int) int
+fn C.fstatat(dirfd int, path &char, buf &C.stat, flags int) int
+fn C.fchmod(fd int, mode int) int
+fn C.symlinkat(target &char, newdirfd int, linkpath &char) int
+fn C.readlinkat(dirfd int, path &char, buf &char, bufsiz u64) i64
 
 const enoent = 2
 const eexist = 17
@@ -201,6 +205,99 @@ pub fn open_or_create_dir(path string) !Dir {
 		dir = child
 	}
 	return dir
+}
+
+fn valid_child_name(name string) bool {
+	return name != '' && name != '.' && name != '..' && !name.contains('/') && !name.contains('\x00')
+}
+
+const s_ifmt = 0o170000
+const s_iflnk = 0o120000
+const s_ifdir = 0o040000
+const s_ifreg = 0o100000
+
+// copy_child_tree copies src_name below d to dst_name below dst without
+// following symlinks. src_path and dst_path are used only to enumerate the
+// children of directories: every stat, open, create and unlink is relative to
+// the already-open descriptors, so replacing either parent with a symlink
+// cannot redirect the copy.
+pub fn (d Dir) copy_child_tree(src_name string, src_path string, dst Dir, dst_name string, dst_path string) ! {
+	if !valid_child_name(src_name) || !valid_child_name(dst_name) {
+		return errs.io_error('invalid child name `${src_name}` -> `${dst_name}`')
+	}
+	mut st := C.stat{}
+	if C.fstatat(d.fd, &char(src_name.str), &st, C.AT_SYMLINK_NOFOLLOW) != 0 {
+		e := C.errno
+		return error_with_code('cannot stat `${src_path}`: ${os.get_error_msg(e)}', e)
+	}
+	mode := u32(st.st_mode)
+	match mode & s_ifmt {
+		s_iflnk {
+			mut buf := []u8{len: 4097}
+			n := C.readlinkat(d.fd, &char(src_name.str), &char(buf.data), u64(buf.len - 1))
+			if n < 0 {
+				e := C.errno
+				return error_with_code('cannot read symlink `${src_path}`: ${os.get_error_msg(e)}',
+					e)
+			}
+			target := buf[..int(n)].bytestr()
+			if C.symlinkat(&char(target.str), dst.fd, &char(dst_name.str)) != 0 {
+				e := C.errno
+				return error_with_code('cannot create symlink `${dst_path}`: ${os.get_error_msg(e)}',
+					e)
+			}
+		}
+		s_ifdir {
+			if C.mkdirat(dst.fd, &char(dst_name.str), 0o700) != 0 {
+				e := C.errno
+				return error_with_code('cannot create directory `${dst_path}`: ${os.get_error_msg(e)}',
+					e)
+			}
+			mut src_child := d.open_child(src_name)!
+			defer {
+				src_child.close()
+			}
+			mut dst_child := dst.open_child(dst_name)!
+			defer {
+				dst_child.close()
+			}
+			for entry in os.ls(src_path) or {
+				return errs.io_error('cannot list `${src_path}`: ${err.msg()}')
+			} {
+				src_child.copy_child_tree(entry, os.join_path(src_path, entry), dst_child,
+					entry, os.join_path(dst_path, entry))!
+			}
+			if C.fchmod(dst_child.fd, int(mode & 0o777)) != 0 {
+				e := C.errno
+				return errs.io_error('cannot set mode on `${dst_path}`: ${os.get_error_msg(e)}')
+			}
+			dst_child.sync(dst_path)!
+		}
+		s_ifreg {
+			in_fd := C.openat(d.fd, &char(src_name.str), C.O_RDONLY | C.O_NOFOLLOW | C.O_CLOEXEC, 0)
+			if in_fd < 0 {
+				e := C.errno
+				return error_with_code('cannot open `${src_path}` for reading: ${os.get_error_msg(e)}',
+					e)
+			}
+			defer {
+				C.close(in_fd)
+			}
+			out_fd := C.openat(dst.fd, &char(dst_name.str), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_CLOEXEC | C.O_NOFOLLOW, 0o600)
+			if out_fd < 0 {
+				e := C.errno
+				return error_with_code('cannot create `${dst_path}`: ${os.get_error_msg(e)}',
+					e)
+			}
+			defer {
+				C.close(out_fd)
+			}
+			copy_fds_sync(in_fd, out_fd, mode, src_path, dst_path)!
+		}
+		else {
+			return errs.unsupported_error('cannot copy special file `${src_path}` across filesystems')
+		}
+	}
 }
 
 fn open_root() !Dir {

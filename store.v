@@ -19,6 +19,9 @@ pub type Clock = fn () time.Time
 @[params]
 pub struct StoreOptions {
 pub:
+	// create allows open_with to initialize a missing store. With create:
+	// false the store directory, items/, .gc/ and index.db must already exist;
+	// nothing is created and a missing piece is a not_found error.
 	create              bool = true
 	mode                u32  = 0o700
 	allow_foreign_owner bool
@@ -108,11 +111,21 @@ pub fn open_with(root string, opts StoreOptions) !&Store {
 		return invalid_target_error('refusing to use the filesystem root as the trash directory')
 	}
 	root_existed := os.is_dir(resolved)
-	if !root_existed && !opts.create {
-		return not_found_error('trash directory `${resolved}` does not exist')
+	if !opts.create {
+		if !root_existed {
+			return not_found_error('trash directory `${resolved}` does not exist')
+		}
+		for name in [index_filename, items_dirname, gc_dirname] {
+			path := os.join_path(resolved, name)
+			if !os.exists(path) && !os.is_link(path) {
+				return not_found_error('trash store `${resolved}` is incomplete: `${path}` is missing')
+			}
+		}
 	}
 	if root_existed {
-		st := os.stat(resolved)!
+		st := os.stat(resolved) or {
+			return context_error(.io, 'stat trash directory', resolved, err)
+		}
 		if st.uid != os.geteuid() && os.geteuid() != 0 && !opts.allow_foreign_owner {
 			return permission_error('trash directory `${resolved}` is owned by uid ${st.uid}; use a directory owned by the current user')
 		}
@@ -125,7 +138,13 @@ pub fn open_with(root string, opts StoreOptions) !&Store {
 			return context_error(.io, 'create trash directory', resolved, err)
 		}
 	}
-	actual_mode := if root_existed { os.stat(resolved)!.mode & 0o777 } else { opts.mode }
+	actual_mode := if root_existed {
+		(os.stat(resolved) or {
+			return context_error(.io, 'stat trash directory', resolved, err)
+		}).mode & 0o777
+	} else {
+		opts.mode
+	}
 	mut s := &Store{
 		root:  resolved
 		mode:  actual_mode
@@ -163,7 +182,9 @@ pub fn open_with(root string, opts StoreOptions) !&Store {
 		if created {
 			os.chmod(dir, int(opts.mode)) or {}
 		} else if !opts.allow_insecure {
-			mode := os.stat(dir)!.mode & 0o777
+			mode := (os.stat(dir) or {
+				return context_error(.io, 'stat store directory', dir, err)
+			}).mode & 0o777
 			if mode & 0o077 != 0 {
 				return invalid_target_error('store directory `${dir}` is accessible by group or others (mode 0${mode:o}); use mode 0700 or pass allow_insecure')
 			}
@@ -347,6 +368,10 @@ pub fn (s Store) recover() !RecoveryReport {
 fn (s Store) recover_locked() !RecoveryReport {
 	mut report := RecoveryReport{}
 	for item in s.pending_items()! {
+		if item.parse_error != '' {
+			report.warnings << 'item ${item.id}: ${item.parse_error}; left untouched'
+			continue
+		}
 		if !is_safe_id(item.id) {
 			// An id read from the index must never be turned into a path: it could
 			// point outside items/. Leave the row for doctor and keep going.
@@ -648,6 +673,10 @@ fn (s Store) purge_broken_locked(id string) string {
 // doctor inspects broken items under an exclusive lock and optionally recovers
 // pending operations or detaches broken items into the garbage directory.
 pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
+	return s.doctor_impl(opts) or { return classify_error(err, 'doctor', s.root) }
+}
+
+fn (s Store) doctor_impl(opts DoctorOptions) !DoctorReport {
 	if os.is_link(s.gc_dir()) {
 		return invalid_target_error('garbage directory `${s.gc_dir()}` must not be a symlink')
 	}

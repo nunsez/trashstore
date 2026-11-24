@@ -188,8 +188,21 @@ fn (s Store) open_index() !sqlite.Db {
 // reset_store wipes the trash after the user confirmed an incompatible index
 // schema. Only entries owned by trash are removed; unrelated files in the store
 // directory are left alone. The store directory itself is kept.
+//
+// The exclusive store lock is held for the whole wipe, so a concurrent open or
+// recovery cannot recreate files halfway through and leave a half-reset store.
 pub fn reset_store(root string) ! {
 	resolved := canonical_path(root)
+	if resolved == '' || !os.is_dir(resolved) {
+		return
+	}
+	mut s := &Store{
+		root: resolved
+	}
+	mut fl := s.lock_exclusive()!
+	defer {
+		fl.release()
+	}
 	for name in [items_dirname, inflight_dirname, gc_dirname] {
 		path := os.join_path(resolved, name)
 		if os.is_link(path) {
@@ -200,8 +213,8 @@ pub fn reset_store(root string) ! {
 			os.rmdir_all(path)!
 		}
 	}
-	for name in [index_filename, '${index_filename}-wal', '${index_filename}-shm', backup_filename,
-		lock_filename] {
+	for name in [index_filename, '${index_filename}-wal', '${index_filename}-shm',
+		'${index_filename}-journal', backup_filename, '${backup_filename}.tmp', lock_filename] {
 		path := os.join_path(resolved, name)
 		if os.is_link(path) || os.exists(path) {
 			os.rm(path)!

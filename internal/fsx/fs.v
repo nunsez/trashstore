@@ -61,6 +61,13 @@ fn copy_file_sync(src string, dst string, mode u32) ! {
 	defer {
 		C.close(out_fd)
 	}
+	copy_fds_sync(in_fd, out_fd, mode, src, dst)!
+}
+
+// copy_fds_sync copies between already-open descriptors. It never touches a
+// path, so it can be used by dirfd-relative callers that must not follow a
+// symlink swapped in after validation.
+fn copy_fds_sync(in_fd int, out_fd int, mode u32, src string, dst string) ! {
 	$if linux {
 		mut copied := false
 		for {
@@ -84,7 +91,9 @@ fn copy_file_sync(src string, dst string, mode u32) ! {
 		}
 		if copied {
 			fsync_fd(out_fd, dst)!
-			os.chmod(dst, int(mode & 0o777))!
+			if C.fchmod(out_fd, int(mode & 0o777)) != 0 {
+				return errs.io_error('cannot set mode on `${dst}`: ${os.get_error_msg(C.errno)}')
+			}
 			return
 		}
 	}
@@ -115,7 +124,9 @@ fn copy_file_sync(src string, dst string, mode u32) ! {
 		}
 	}
 	fsync_fd(out_fd, dst)!
-	os.chmod(dst, int(mode & 0o777))!
+	if C.fchmod(out_fd, int(mode & 0o777)) != 0 {
+		return errs.io_error('cannot set mode on `${dst}`: ${os.get_error_msg(C.errno)}')
+	}
 }
 
 // copy_path_sync copies a file, symlink or directory tree without replacing dst.

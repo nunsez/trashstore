@@ -1146,3 +1146,13 @@ fn test_flag_presence_is_validated_not_value() {
 	assert keep.keep_set
 	assert keep.keep == 0
 }
+
+// regression: stats must parse its own RFC3339 timestamps and surface a parse
+// error instead of silently substituting the current time.
+fn test_stats_time_parses_rfc3339() {
+	parsed := stats_time(time.unix(1000).format_rfc3339()) or { panic(err) }
+	assert parsed.unix() == 1000
+	mut failed := false
+	stats_time('not-a-timestamp') or { failed = true }
+	assert failed
+}

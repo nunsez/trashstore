@@ -416,6 +416,15 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 	}
 }
 
+// stats_time parses the RFC3339 timestamp stored in StoreStats. A parse failure
+// means the value is corrupt; substituting the current time would make `stats`
+// report a plausible but wrong oldest/newest, so the error is surfaced instead.
+fn stats_time(value string) !time.Time {
+	return time.parse_rfc3339(value) or {
+		return error('invalid timestamp `${value}` in stats: ${err.msg()}')
+	}
+}
+
 fn run_stats(mut set StoreSet, cli Cli) ! {
 	mut report := StatsReport{
 		root: set.spec.root
@@ -458,7 +467,9 @@ fn run_stats(mut set StoreSet, cli Cli) ! {
 		}
 		println('${root_report.items} item(s), ${format.format_size(root_report.size)}${unknown_suffix(root_report.unknown)}')
 		if root_report.oldest != '' {
-			println('oldest ${format.format_time(time.parse(root_report.oldest) or { time.now() })}  newest ${format.format_time(time.parse(root_report.newest) or { time.now() })}')
+			oldest := format.format_time(stats_time(root_report.oldest)!)
+			newest := format.format_time(stats_time(root_report.newest)!)
+			println('oldest ${oldest}  newest ${newest}')
 		}
 		if root_report.broken > 0 {
 			println(cli.palette().red('${root_report.broken} broken item(s)'))
@@ -468,7 +479,9 @@ fn run_stats(mut set StoreSet, cli Cli) ! {
 		println('')
 		println('total: ${report.items} item(s), ${format.format_size(report.size)}${unknown_suffix(report.unknown)}')
 		if report.oldest != '' {
-			println('oldest ${format.format_time(time.parse(report.oldest) or { time.now() })}  newest ${format.format_time(time.parse(report.newest) or { time.now() })}')
+			oldest := format.format_time(stats_time(report.oldest)!)
+			newest := format.format_time(stats_time(report.newest)!)
+			println('oldest ${oldest}  newest ${newest}')
 		}
 		if report.broken > 0 {
 			println(cli.palette().red('${report.broken} broken item(s)'))

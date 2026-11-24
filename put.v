@@ -39,6 +39,9 @@ fn (s Store) create_item_dir_opts(sync bool) !(string, string) {
 	}
 	for _ in 0 .. 100 {
 		id := s.next_id()
+		if !is_safe_id(id) {
+			return invalid_target_error('id generator returned an unsafe id `${id}`')
+		}
 		dir := s.item_dir(id)
 		os.mkdir(dir, mode: 0o700) or {
 			if os.exists(dir) {
@@ -58,6 +61,11 @@ fn (s Store) create_item_dir_opts(sync bool) !(string, string) {
 // It is used by put_many() and by --preview / -i/--interactive before asking
 // for confirmation.
 pub fn (s Store) plan_put(path string, opts PutOptions) !Entry {
+	if path.contains('\x00') {
+		// The OS truncates paths at NUL, so a stored path would no longer name
+		// the file the caller meant and could poison the index.
+		return invalid_target_error('path contains a NUL byte')
+	}
 	target := canonical_target_path(path)
 	if !os.exists(target) && !os.is_link(target) {
 		return not_found_error('file or directory does not exist: `${path}`')
@@ -94,7 +102,7 @@ pub fn (s Store) put(path string, opts PutOptions) !Entry {
 	defer {
 		fl.release()
 	}
-	return s.put_locked(path, opts)
+	return s.put_locked(path, opts) or { return classify_error(err, 'put', path) }
 }
 
 // put_many moves several paths under one shared lock and reports per-item
@@ -130,10 +138,10 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 		for p in prepared {
 			os.rmdir_all(p.item) or {}
 		}
-		return err
+		return classify_error(err, 'put', 'batch')
 	}
 	// Make the new item directories durable before any source path is moved.
-	s.sync_dir(s.items_dir())!
+	s.sync_dir(s.items_dir()) or { return classify_error(err, 'put', s.items_dir()) }
 
 	mut final_dirs := []string{}
 	mut moved := []Entry{}
@@ -167,11 +175,13 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 		for entry in moved {
 			moved_ids << entry.id
 		}
-		s.set_items_state(moved_ids, .trashed)!
+		s.set_items_state(moved_ids, .trashed) or {
+			return classify_error(err, 'put', 'batch')
+		}
 	}
 	final_dirs << s.items_dir()
 	for dir in unique_dirs(final_dirs) {
-		s.sync_dir(dir)!
+		s.sync_dir(dir) or { return classify_error(err, 'put', dir) }
 	}
 	batch.entries << moved
 	return batch
@@ -195,16 +205,18 @@ fn move_put_payload(src_path string, item_dir string) ! {
 		if err.code() != 18 {
 			return err
 		}
-		// EXDEV: copy into the item directory, then place it with renameat.
+		// EXDEV: copy into the item directory, then place it with renameat. The
+		// copy and the source removal are descriptor-relative, so a parent
+		// swapped for a symlink cannot redirect either operation.
 		tmp_name := '.put-tmp'
 		tmp := os.join_path(item_dir, tmp_name)
-		fsx.remove_any(tmp) or {}
+		dst.remove_child_any(tmp_name, tmp) or {}
 		defer {
-			fsx.remove_any(tmp) or {}
+			dst.remove_child_any(tmp_name, tmp) or {}
 		}
-		fsx.copy_path_sync(src_path, tmp)!
+		src.copy_child_tree(name, src_path, dst, tmp_name, tmp)!
 		fsx.renameat_noreplace(dst.fd, tmp_name, dst.fd, 'data')!
-		fsx.remove_any(src_path)!
+		src.remove_child_any(name, src_path)!
 	}
 	src.sync(os.dir(src_path))!
 	dst.sync(item_dir)!

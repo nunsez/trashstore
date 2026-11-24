@@ -19,6 +19,10 @@ mut:
 	data_ino      u64
 	target_dev    i64
 	target_ino    u64
+	// parse_error is set when a stored path cannot be decoded. The row is still
+	// returned so scan()/doctor can report it as broken instead of losing every
+	// other item in the index.
+	parse_error string
 }
 
 const item_columns = 'id, original_path, trashed_at, kind, size, size_known, state, restore_to, data_dev, data_ino, target_dev, target_ino'
@@ -70,11 +74,18 @@ fn index_state(value i64) EntryState {
 	}
 }
 
-fn index_item_from_stmt(st &sqlite.Stmt) !IndexItem {
+fn index_item_from_stmt(st &sqlite.Stmt) IndexItem {
+	mut parse_error := ''
 	original_path := percent_decode_path(st.column_text(1)) or {
-		return io_error('invalid original_path in index: ${err.msg()}')
+		parse_error = 'invalid original_path in index: ${err.msg()}'
+		''
 	}
-	restore_to := percent_decode_path(st.column_text(7)) or { '' }
+	restore_to := percent_decode_path(st.column_text(7)) or {
+		if parse_error == '' {
+			parse_error = 'invalid restore_to in index: ${err.msg()}'
+		}
+		''
+	}
 	return IndexItem{
 		id:            st.column_text(0)
 		original_path: original_path
@@ -88,6 +99,7 @@ fn index_item_from_stmt(st &sqlite.Stmt) !IndexItem {
 		data_ino:      index_u64(st.column_int(9))
 		target_dev:    st.column_int(10)
 		target_ino:    index_u64(st.column_int(11))
+		parse_error:   parse_error
 	}
 }
 
@@ -267,7 +279,11 @@ fn (s Store) get_item(id string) !IndexItem {
 	if !st.step()! {
 		return not_found_error('item `${id}` is not in the index')
 	}
-	return index_item_from_stmt(st)!
+	item := index_item_from_stmt(st)
+	if item.parse_error != '' {
+		return io_error('index row `${id}` is corrupt: ${item.parse_error}')
+	}
+	return item
 }
 
 // entry returns the public view of one indexed item.
@@ -286,7 +302,7 @@ fn (s Store) all_items() ![]IndexItem {
 		if !st.step()! {
 			break
 		}
-		items << index_item_from_stmt(st)!
+		items << index_item_from_stmt(st)
 	}
 	return items
 }
@@ -303,7 +319,7 @@ fn (s Store) trashed_items() ![]IndexItem {
 		if !st.step()! {
 			break
 		}
-		items << index_item_from_stmt(st)!
+		items << index_item_from_stmt(st)
 	}
 	return items
 }
@@ -320,7 +336,7 @@ fn (s Store) pending_items() ![]IndexItem {
 		if !st.step()! {
 			break
 		}
-		items << index_item_from_stmt(st)!
+		items << index_item_from_stmt(st)
 	}
 	return items
 }

@@ -67,6 +67,13 @@ pub fn (s Store) scan() ScanResult {
 	mut result := ScanResult{}
 	mut seen := map[string]bool{}
 	for item in items {
+		if item.parse_error != '' {
+			result.broken << BrokenItem{
+				id:     item.id
+				reason: 'corrupt index row: ${item.parse_error}'
+			}
+			continue
+		}
 		if !is_safe_id(item.id) {
 			result.broken << BrokenItem{
 				id:     item.id
@@ -170,10 +177,26 @@ pub fn filter_criteria(entries []Entry, filter ListFilter) []Entry {
 }
 
 // sort_entries orders entries by the requested key. An empty or unknown key
-// preserves the incoming order (newest first for a fresh scan).
+// preserves the incoming order (newest first for a fresh scan). `date` sorts by
+// the recorded trashed_at rather than by id, because ids are only monotonic for
+// the default UUIDv7 generator: a rebuilt store or a custom clock can produce
+// rows whose id order disagrees with their timestamps.
 pub fn sort_entries(entries []Entry, sort string) []Entry {
 	mut result := entries.clone()
 	match sort {
+		'date' {
+			result.sort_with_compare(fn (a &Entry, b &Entry) int {
+				a_nanos := a.trashed_at.unix_nano()
+				b_nanos := b.trashed_at.unix_nano()
+				if a_nanos != b_nanos {
+					return if a_nanos > b_nanos { -1 } else { 1 }
+				}
+				if a.id == b.id {
+					return 0
+				}
+				return if a.id > b.id { -1 } else { 1 }
+			})
+		}
 		'size' { result.sort(a.size > b.size) }
 		'path' { result.sort(a.original_path < b.original_path) }
 		'kind' { result.sort(a.kind.label() < b.kind.label()) }

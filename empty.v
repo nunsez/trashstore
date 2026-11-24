@@ -10,14 +10,15 @@ pub mut:
 }
 
 // empty_entries permanently deletes already resolved entries and then cleans .gc.
+// Garbage is collected even when some items failed, so a partial run does not
+// leave successfully emptied payloads behind in .gc until the next command.
 pub fn (s Store) empty_entries(entries []Entry) !int {
 	batch := s.empty_batch(entries)!
+	gc_err := s.gc()
 	if batch.failures.len > 0 {
-		return error(batch.failures[0].message)
+		return batch_failure_error(batch.failures[0])
 	}
-	if batch.emptied > 0 {
-		s.gc()!
-	}
+	gc_err!
 	return batch.emptied
 }
 
@@ -56,10 +57,12 @@ pub fn (s Store) empty_batch(entries []Entry) !EmptyBatch {
 		emptied_ids << entry.id
 	}
 	if emptied_ids.len > 0 {
-		s.delete_items(emptied_ids)!
+		s.delete_items(emptied_ids) or {
+			return classify_error(err, 'empty', emptied_ids.join(','))
+		}
 	}
-	s.sync_dir(s.items_dir())!
-	s.sync_dir(s.gc_dir())!
+	s.sync_dir(s.items_dir()) or { return classify_error(err, 'empty', s.items_dir()) }
+	s.sync_dir(s.gc_dir()) or { return classify_error(err, 'empty', s.gc_dir()) }
 	return batch
 }
 
@@ -74,8 +77,12 @@ fn (s Store) empty_one_locked(entry Entry) ! {
 		return invalid_target_error('item directory `${s.item_dir(entry.id)}` must not be a symlink')
 	}
 	s.get_item(entry.id)!
+	new_id := s.next_id()
+	if !is_safe_id(new_id) {
+		return invalid_target_error('id generator returned an unsafe id `${new_id}`')
+	}
 	s.set_item_state(entry.id, .pending_empty)!
-	dest := os.join_path(s.gc_dir(), '${entry.id}-${s.next_id()}')
+	dest := os.join_path(s.gc_dir(), '${entry.id}-${new_id}')
 	fsx.rename_noreplace(s.item_dir(entry.id), dest) or {
 		s.set_item_state(entry.id, .trashed) or {}
 		return err

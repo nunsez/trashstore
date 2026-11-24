@@ -7,8 +7,10 @@ const percent_hex = '0123456789ABCDEF'
 
 // canonical_path resolves symlinks in every existing component of `path`.
 // Unlike os.real_path it also works when the path itself does not exist yet.
+// An empty string is returned for an empty or NUL-containing path: the OS would
+// truncate the latter at the NUL, silently naming a different file.
 pub fn canonical_path(path string) string {
-	if path == '' {
+	if path == '' || path.contains('\x00') {
 		return ''
 	}
 	abs := os.abs_path(path)
@@ -25,8 +27,9 @@ pub fn canonical_path(path string) string {
 
 // canonical_target_path canonicalises the parent of `path` but keeps the final
 // component as is, so symlinks themselves are moved/restored instead of their targets.
+// An empty string is returned for an empty or NUL-containing path.
 pub fn canonical_target_path(path string) string {
-	if path == '' {
+	if path == '' || path.contains('\x00') {
 		return ''
 	}
 	abs := os.abs_path(path)

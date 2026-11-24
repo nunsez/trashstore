@@ -42,7 +42,7 @@ pub fn (s Store) restore(ref string, opts RestoreOptions) ![]RestoreResult {
 pub fn (s Store) restore_entries(entries []Entry) ![]RestoreResult {
 	batch := s.restore_batch(entries)!
 	if batch.failures.len > 0 {
-		return error(batch.failures[0].message)
+		return batch_failure_error(batch.failures[0])
 	}
 	return batch.results
 }
@@ -65,9 +65,11 @@ pub fn (s Store) restore_batch(entries []Entry) !RestoreBatch {
 		restored_ids << entry.id
 	}
 	if restored_ids.len > 0 {
-		s.delete_items(restored_ids)!
+		s.delete_items(restored_ids) or {
+			return classify_error(err, 'restore', restored_ids.join(','))
+		}
 	}
-	s.sync_dir(s.items_dir())!
+	s.sync_dir(s.items_dir()) or { return classify_error(err, 'restore', s.items_dir()) }
 	return batch
 }
 
@@ -92,7 +94,7 @@ fn restore_target_path(original string) !string {
 	return abs
 }
 
-fn (s Store) move_restore_data_cross(entry_id string, dst fsx.Dir, parent string, dst_name string, mut item IndexItem) ! {
+fn (s Store) move_restore_data_cross(entry_id string, src fsx.Dir, dst fsx.Dir, parent string, dst_name string, mut item IndexItem) ! {
 	// Cross-device copy: the temporary copy must live on the target filesystem,
 	// next to the final name, so the last step is an atomic renameat. The
 	// inode is journaled before the rename so recovery can recognize an already
@@ -112,7 +114,7 @@ fn (s Store) move_restore_data_cross(entry_id string, dst fsx.Dir, parent string
 		}
 		dst.remove_child_any(marker_name, marker) or {}
 	}
-	fsx.copy_path_sync(s.data_path(entry_id), tmp)!
+	src.copy_child_tree('data', s.data_path(entry_id), dst, tmp_name, tmp)!
 	copied = true
 	st := os.lstat(tmp)!
 	item.target_dev = st.dev
@@ -120,7 +122,7 @@ fn (s Store) move_restore_data_cross(entry_id string, dst fsx.Dir, parent string
 	s.update_item(item)!
 	fsx.renameat_noreplace(dst.fd, tmp_name, dst.fd, dst_name)!
 	failpoint('restore:after-target-rename')!
-	fsx.remove_any(s.data_path(entry_id))!
+	src.remove_child_any('data', s.data_path(entry_id))!
 }
 
 fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
@@ -172,7 +174,7 @@ fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
 		fsx.renameat_noreplace(src.fd, 'data', dst.fd, candidate) or {
 			if err.code() == 18 {
 				// EXDEV: the payload lives on another filesystem.
-				s.move_restore_data_cross(entry.id, dst, parent, candidate, mut item) or {
+				s.move_restore_data_cross(entry.id, src, dst, parent, candidate, mut item) or {
 					if err.code() == 17 {
 						continue
 					}
