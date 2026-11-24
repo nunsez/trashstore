@@ -3,12 +3,14 @@ module trashcli
 import os
 import time
 import internal.format
+import internal.pathx
+import trash
 
 fn C.dup(fd int) int
 fn C.dup2(oldfd int, newfd int) int
 
 fn cli_dir(name string) string {
-	dir := canonical_path(os.join_path(os.temp_dir(), 'v_trash_cli_${os.getpid()}_${name}'))
+	dir := pathx.canonical_path(os.join_path(os.temp_dir(), 'v_trash_cli_${os.getpid()}_${name}'))
 	os.rmdir_all(dir) or {}
 	os.mkdir_all(dir) or { panic(err) }
 	return dir
@@ -77,8 +79,8 @@ fn test_canonical_path_resolves_existing_symlink_directory() {
 		os.mkdir(real) or { panic(err) }
 		link := os.join_path(root, 'link')
 		os.symlink(real, link) or { panic(err) }
-		assert canonical_path(link) == canonical_path(real)
-		assert canonical_target_path(link) == link
+		assert pathx.canonical_path(link) == pathx.canonical_path(real)
+		assert pathx.canonical_target_path(link) == link
 	}
 }
 
@@ -88,16 +90,16 @@ fn test_resolve_name_conflict_free_and_taken() {
 		cli_cleanup(root)
 	}
 	base := os.join_path(root, 'a')
-	assert resolve_name_conflict(base) == base
+	assert pathx.resolve_name_conflict(base) == base
 	cli_write(base, 'x')
-	assert resolve_name_conflict(base) == '${base}~1'
+	assert pathx.resolve_name_conflict(base) == '${base}~1'
 	cli_write('${base}~1', 'x')
-	assert resolve_name_conflict(base) == '${base}~2'
+	assert pathx.resolve_name_conflict(base) == '${base}~2'
 }
 
 fn test_resolve_store_prefers_cli_path() {
 	path := os.join_path(os.temp_dir(), 'trash-cli-grave')
-	assert (resolve_store(path) or { panic(err) }) == canonical_path(path)
+	assert (resolve_store(path) or { panic(err) }) == pathx.canonical_path(path)
 }
 
 fn test_resolve_store_uses_environment() {
@@ -111,7 +113,7 @@ fn test_resolve_store_uses_environment() {
 			os.setenv('TRASH_STORE', old, true)
 		}
 	}
-	assert (resolve_store('') or { panic(err) }) == canonical_path(path)
+	assert (resolve_store('') or { panic(err) }) == pathx.canonical_path(path)
 }
 
 fn test_resolve_store_uses_xdg_data_home() {
@@ -130,7 +132,7 @@ fn test_resolve_store_uses_xdg_data_home() {
 			os.setenv('XDG_DATA_HOME', old_xdg, true)
 		}
 	}
-	assert (resolve_store('') or { panic(err) }) == canonical_path(os.join_path(xdg, 'trash'))
+	assert (resolve_store('') or { panic(err) }) == pathx.canonical_path(os.join_path(xdg, 'trash'))
 }
 
 fn test_parse_finds_command_after_global_flags() {
@@ -218,7 +220,7 @@ fn test_run_put_and_restore() {
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 	assert !os.exists(file)
 
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	assert store.list().len == 1
 
 	cli_run(['trash', '--store', store_path, 'restore', '--all']) or { panic(err) }
@@ -253,7 +255,7 @@ fn test_run_empty_target() {
 	cli_write(file, 'x')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	entry := store.list()[0]
 	cli_run(['trash', '--store', store_path, 'empty', '--yes', entry.id]) or { panic(err) }
 	assert store.list().len == 0
@@ -277,7 +279,7 @@ fn test_run_empty_requires_yes_when_not_interactive() {
 	cli_run(['trash', '--store', store_path, 'empty', '--all']) or { failed = true }
 	assert failed
 
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	assert store.list().len == 1
 
 	cli_run(['trash', '--store', store_path, 'empty', '--all', '--yes']) or { panic(err) }
@@ -293,7 +295,7 @@ fn test_run_empty_all_leaves_broken_unless_include_broken() {
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	orphan := '00000000-0000-7000-8000-000000000000'
 	os.mkdir_all(store.item_dir(orphan)) or { panic(err) }
 	cli_write(store.data_path(orphan), 'orphan')
@@ -341,7 +343,7 @@ fn test_run_restore_by_prefix() {
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	id := store.list()[0].id
 	cli_run(['trash', '--store', store_path, 'restore', id[..8]]) or { panic(err) }
 	assert os.exists(file)
@@ -357,7 +359,7 @@ fn test_run_dry_run_does_not_move() {
 	cli_write(file, 'x')
 	cli_run(['trash', '--store', store_path, '--dry-run', file]) or { panic(err) }
 	assert os.exists(file)
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	assert store.list().len == 0
 }
 
@@ -394,7 +396,7 @@ fn test_run_where_resolves_target() {
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'hello')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	entry := store.list()[0]
 	assert store.payload_path(entry.id) == os.join_path(store_path, 'items', entry.id, 'data')
 	cli_run(['trash', '--store', store_path, 'where', entry.id]) or { panic(err) }
@@ -413,7 +415,7 @@ fn test_resolve_refs_preserves_order_and_dedupes() {
 	cli_write(b, 'b')
 	cli_run(['trash', '--store', store_path, a]) or { panic(err) }
 	cli_run(['trash', '--store', store_path, b]) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	entries := store.scan().entries
 	mut a_id := ''
 	mut b_id := ''
@@ -440,7 +442,7 @@ fn test_resolve_refs_tolerant_counts_failures() {
 	a := os.join_path(root, 'a.txt')
 	cli_write(a, 'a')
 	cli_run(['trash', '--store', store_path, a]) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	entries := store.scan().entries
 	res := resolve_refs(entries, [entries[0].id, 'deadbeefdeadbeef'], false, true) or {
 		panic(err)
@@ -462,7 +464,7 @@ fn test_run_where_reads_refs_from_stdin() {
 		file := os.join_path(root, 'a.txt')
 		cli_write(file, 'hello')
 		cli_run(['trash', '--store', store_path, file]) or { panic(err) }
-		store := open(store_path) or { panic(err) }
+		store := trash.open(store_path) or { panic(err) }
 		id := store.list()[0].id
 		refs_file := os.join_path(root, 'refs.txt')
 		os.write_file(refs_file, '${id}\n') or { panic(err) }
@@ -484,7 +486,7 @@ fn test_run_where_stdin_skips_unknown_refs() {
 		file := os.join_path(root, 'a.txt')
 		cli_write(file, 'hello')
 		cli_run(['trash', '--store', store_path, file]) or { panic(err) }
-		store := open(store_path) or { panic(err) }
+		store := trash.open(store_path) or { panic(err) }
 		id := store.list()[0].id
 		refs_file := os.join_path(root, 'refs.txt')
 		os.write_file(refs_file, '${id}\ndeadbeefdeadbeef\n') or { panic(err) }
@@ -536,7 +538,7 @@ fn test_doctor_repairs_interrupted_put() {
 		cli_cleanup(root)
 	}
 	store_path := os.join_path(root, 'trash')
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
 	os.setenv('TRASH_TEST_FAILPOINTS', '1', true)
@@ -556,7 +558,7 @@ fn test_doctor_purge_removes_broken_item() {
 		cli_cleanup(root)
 	}
 	store_path := os.join_path(root, 'trash')
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'x')
 	entry := store.put(file) or { panic(err) }
@@ -604,11 +606,11 @@ fn test_resolve_selection_scope_parity() {
 	cli_run(['trash', '--store', store_path, a]) or { panic(err) }
 	cli_run(['trash', '--store', store_path, b]) or { panic(err) }
 
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	entries := store.scan().entries
 	from_work := resolve_selection(entries, SelectionOptions{ cwd: work })!
 	assert from_work.len == 1
-	assert from_work[0].original_path == canonical_target_path(a)
+	assert from_work[0].original_path == pathx.canonical_target_path(a)
 	whole := resolve_selection(entries, SelectionOptions{ cwd: work, all: true })!
 	assert whole.len == 2
 }
@@ -632,10 +634,10 @@ fn test_run_empty_keep() {
 		cli_run(['trash', '--store', store_path, path]) or { panic(err) }
 	}
 	cli_run(['trash', '--store', store_path, 'empty', '--keep', '1', '--yes']) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	left := store.list()
 	assert left.len == 1
-	assert left[0].original_path == canonical_target_path(os.join_path(work, 'c.txt'))
+	assert left[0].original_path == pathx.canonical_target_path(os.join_path(work, 'c.txt'))
 }
 
 fn test_resolve_selection_recursive_target() {
@@ -650,7 +652,7 @@ fn test_resolve_selection_recursive_target() {
 	cli_write(file, 'c')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
 
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	entries := store.scan().entries
 	mut failed := false
 	resolve_selection(entries, SelectionOptions{
@@ -665,7 +667,7 @@ fn test_resolve_selection_recursive_target() {
 		recursive: true
 	})!
 	assert selected.len == 1
-	assert selected[0].original_path == canonical_target_path(file)
+	assert selected[0].original_path == pathx.canonical_target_path(file)
 }
 
 fn test_select_pipeline_stage_order() {
@@ -679,16 +681,16 @@ fn test_select_pipeline_stage_order() {
 
 	// Scope runs before predicates: a cwd only matches its own entries. The
 	// table paths are not canonicalized, so build a scoped set from a real root.
-	root := canonical_path('/tmp/t')
+	root := pathx.canonical_path('/tmp/t')
 	scoped_entries := [
-		Entry{
+		trash.Entry{
 			id:            'a'
 			original_path: os.join_path(root, 'report.txt')
 			trashed_at:    time.now()
 			kind:          .file
 			state:         .trashed
 		},
-		Entry{
+		trash.Entry{
 			id:            'b'
 			original_path: os.join_path(root, 'notes', 'old.md')
 			trashed_at:    time.now()
@@ -739,8 +741,8 @@ mut:
 fn test_select_measures_sizes_after_filters_and_before_sorting() {
 	entries := table_test_entries()
 	mut log := &FillLog{}
-	fill := fn [mut log] (candidates []Entry) []Entry {
-		mut measured := []Entry{cap: candidates.len}
+	fill := fn [mut log] (candidates []trash.Entry) []trash.Entry {
+		mut measured := []trash.Entry{cap: candidates.len}
 		for entry in candidates {
 			log.paths << entry.original_path
 			mut sized := entry
@@ -765,8 +767,8 @@ fn test_select_measures_sizes_after_filters_and_before_sorting() {
 	assert log.paths.len == 3
 
 	mut file_log := &FillLog{}
-	file_fill := fn [mut file_log] (candidates []Entry) []Entry {
-		mut measured := []Entry{cap: candidates.len}
+	file_fill := fn [mut file_log] (candidates []trash.Entry) []trash.Entry {
+		mut measured := []trash.Entry{cap: candidates.len}
 		for entry in candidates {
 			file_log.paths << entry.original_path
 			mut sized := entry
@@ -819,10 +821,10 @@ fn test_select_matches_resolve_selection() {
 	}
 }
 
-fn table_test_entries() []Entry {
+fn table_test_entries() []trash.Entry {
 	now := time.now()
 	return [
-		Entry{
+		trash.Entry{
 			id:            '01a20888-4019-7800-9e03-53368bd42d97'
 			original_path: '/tmp/t/report.txt'
 			trashed_at:    now.add(-2 * time.hour)
@@ -831,7 +833,7 @@ fn table_test_entries() []Entry {
 			size_known:    true
 			state:         .trashed
 		},
-		Entry{
+		trash.Entry{
 			id:            '01a20888-4032-7600-a8eb-2a3b7cb182b1'
 			original_path: '/tmp/t/build'
 			trashed_at:    now.add(-5 * 24 * time.hour)
@@ -839,7 +841,7 @@ fn table_test_entries() []Entry {
 			size:          3 * 1024 * 1024
 			state:         .trashed
 		},
-		Entry{
+		trash.Entry{
 			id:            '01a20888-401b-7881-9b09-b1b4c691f1fa'
 			original_path: '/tmp/t/notes/old.md'
 			trashed_at:    now.add(-360 * 24 * time.hour)
@@ -876,7 +878,7 @@ fn test_table_header_and_alignment() {
 
 fn test_table_wide_size_keeps_columns() {
 	mut entries := table_test_entries()
-	entries << Entry{
+	entries << trash.Entry{
 		id:            'deadbeef0000000000000000000000ff'
 		original_path: '/tmp/t/big.iso'
 		trashed_at:    time.now().add(-90 * time.second)
@@ -999,7 +1001,7 @@ fn test_run_list_no_size_keeps_sizes_unknown() {
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'hello')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	id := store.list()[0].id
 	assert !store.entry(id)!.size_known
 
@@ -1018,7 +1020,7 @@ fn test_run_list_measures_unknown_sizes() {
 		cli_write(os.join_path(dir, 'a.txt'), '12345')
 		cli_write(os.join_path(dir, 'sub', 'b.txt'), '123')
 		cli_run(['trash', '--store', store_path, '-r', dir]) or { panic(err) }
-		store := open(store_path) or { panic(err) }
+		store := trash.open(store_path) or { panic(err) }
 		id := store.list()[0].id
 		assert !store.entry(id)!.size_known
 
@@ -1039,7 +1041,7 @@ fn test_run_doctor_repair_measures_sizes() {
 	file := os.join_path(root, 'a.txt')
 	cli_write(file, 'hello')
 	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
-	store := open(store_path) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
 	assert store.stats().unknown == 1
 
 	cli_run(['trash', '--store', store_path, 'doctor', '--repair']) or { panic(err) }
@@ -1049,7 +1051,7 @@ fn test_run_doctor_repair_measures_sizes() {
 
 fn test_table_shows_known_directory_size() {
 	entries := [
-		Entry{
+		trash.Entry{
 			id:            '01a20888-4032-7600-a8eb-2a3b7cb182b1'
 			original_path: '/tmp/t/build'
 			trashed_at:    time.now().add(-5 * 24 * time.hour)

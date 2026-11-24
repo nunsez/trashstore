@@ -1,6 +1,7 @@
 module trashcli
 
 import os
+import trash
 
 fn print_preview_info(target string) {
 	if os.is_link(target) {
@@ -24,7 +25,7 @@ fn print_preview_info(target string) {
 		println('${target}: unreadable')
 		return
 	}
-	println('${target}: ${detect_kind(target).label()}, ${st.size} bytes')
+	println('${target}: ${trash.detect_kind(target).label()}, ${st.size} bytes')
 	mut f := os.open(target) or { return }
 	mut buf := []u8{len: 4096}
 	n := f.read(mut buf) or { 0 }

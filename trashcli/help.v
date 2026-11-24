@@ -1,7 +1,9 @@
 module trashcli
 
+import trash
+
 fn general_help() string {
-	return 'trash ${app_version} - safe rm replacement with recovery\n\n' +
+	return 'trash ${trash.app_version} - safe rm replacement with recovery\n\n' +
 		'Usage:\n' +
 		'  trash [OPTIONS] <path>...\n' +
 		'  trash <command> [OPTIONS] [ARGS]\n\n' +

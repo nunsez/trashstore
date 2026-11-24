@@ -4,6 +4,7 @@ import internal.format
 import math
 import os
 import term
+import trash
 
 pub struct Palette {
 pub:
@@ -84,7 +85,7 @@ pub:
 	size_known    bool
 }
 
-fn json_entry(entry Entry) JsonEntry {
+fn json_entry(entry trash.Entry) JsonEntry {
 	return JsonEntry{
 		id:            entry.id
 		original_path: entry.original_path
@@ -95,7 +96,7 @@ fn json_entry(entry Entry) JsonEntry {
 	}
 }
 
-fn json_entries(entries []Entry) []JsonEntry {
+fn json_entries(entries []trash.Entry) []JsonEntry {
 	mut result := []JsonEntry{}
 	for entry in entries {
 		result << json_entry(entry)
@@ -124,7 +125,7 @@ fn max_width(current int, value string) int {
 
 // table_lines renders the header and one line per row. Every cell is padded to
 // the column width, so the header and all rows share the same column offsets.
-fn table_lines(entries []Entry, cwd string, long bool, p Palette) []string {
+fn table_lines(entries []trash.Entry, cwd string, long bool, p Palette) []string {
 	mut rows := []TableRow{cap: entries.len}
 	for entry in entries {
 		rows << TableRow{
@@ -169,7 +170,7 @@ fn table_lines(entries []Entry, cwd string, long bool, p Palette) []string {
 	return lines
 }
 
-fn print_table(entries []Entry, cwd string, long bool, p Palette) {
+fn print_table(entries []trash.Entry, cwd string, long bool, p Palette) {
 	mut total := u64(0)
 	mut unknown := 0
 	for entry in entries {

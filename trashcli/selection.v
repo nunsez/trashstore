@@ -1,8 +1,10 @@
 module trashcli
 
 import internal.format
+import internal.pathx
 import os
 import strconv
+import trash
 
 @[params]
 pub struct SelectionOptions {
@@ -37,9 +39,9 @@ fn selection_options(cli Cli, cwd string) SelectionOptions {
 
 // SizeFiller measures the entries whose size is still unknown. The CLI passes
 // a Store-backed filler; pure callers can use identity_sizes.
-pub type SizeFiller = fn (entries []Entry) []Entry
+pub type SizeFiller = fn (entries []trash.Entry) []trash.Entry
 
-fn identity_sizes(entries []Entry) []Entry {
+fn identity_sizes(entries []trash.Entry) []trash.Entry {
 	return entries
 }
 
@@ -47,7 +49,7 @@ fn identity_sizes(entries []Entry) []Entry {
 // resolve refs -> scope -> keep -> predicates -> size -> sort -> limit. Sizes
 // are measured only after predicates and only when sorting by size, and always
 // before the limit so `--limit 1 --sort size` returns the largest match.
-pub fn select(entries []Entry, opts SelectionOptions, fill SizeFiller) ![]Entry {
+pub fn select(entries []trash.Entry, opts SelectionOptions, fill SizeFiller) ![]trash.Entry {
 	if opts.all && opts.targets.len > 0 {
 		return error('--all cannot be combined with targets')
 	}
@@ -57,34 +59,34 @@ pub fn select(entries []Entry, opts SelectionOptions, fill SizeFiller) ![]Entry 
 	base := if opts.targets.len > 0 {
 		collect_targets(entries, opts.targets, opts.recursive)!
 	} else {
-		filter_scope(entries, opts.cwd, opts.recursive, opts.all)
+		trash.filter_scope(entries, opts.cwd, opts.recursive, opts.all)
 	}
 	// --keep protects the newest N items of the base set before filters run,
 	// so retention never deletes the newest items even when a filter matches.
 	kept := if opts.keep > 0 {
-		if base.len > opts.keep { base[opts.keep..] } else { []Entry{} }
+		if base.len > opts.keep { base[opts.keep..] } else { []trash.Entry{} }
 	} else {
 		base
 	}
-	filtered := filter_criteria(kept, ListFilter{
+	filtered := trash.filter_criteria(kept, trash.ListFilter{
 		all:                true
 		kind:               opts.kind
 		grep:               opts.grep
 		older_than_seconds: opts.older_than_seconds
 	})
 	measured := if opts.sort == 'size' { fill(filtered) } else { filtered }
-	return limit_entries(sort_entries(measured, opts.sort), opts.limit)
+	return trash.limit_entries(trash.sort_entries(measured, opts.sort), opts.limit)
 }
 
 // resolve_selection is the store-less variant of select, kept for callers that
 // already have sizes (or do not sort by size).
-pub fn resolve_selection(entries []Entry, opts SelectionOptions) ![]Entry {
+pub fn resolve_selection(entries []trash.Entry, opts SelectionOptions) ![]trash.Entry {
 	return select(entries, opts, identity_sizes)
 }
 
 struct RefResolution {
 mut:
-	entries  []Entry
+	entries  []trash.Entry
 	warnings []string
 	failed   int
 }
@@ -94,21 +96,21 @@ mut:
 // targets are dropped. When tolerant is false an unresolvable target aborts
 // with the regular not-found/ambiguous error; when it is true the ref is
 // reported as a warning, skipped, and counted in failed.
-fn resolve_refs(entries []Entry, refs []string, recursive bool, tolerant bool) !RefResolution {
-	mut selected := []Entry{}
+fn resolve_refs(entries []trash.Entry, refs []string, recursive bool, tolerant bool) !RefResolution {
+	mut selected := []trash.Entry{}
 	mut seen := map[string]bool{}
 	mut warnings := []string{}
 	mut failed := 0
 	for ref in refs {
-		candidate := canonical_target_path(ref)
+		candidate := pathx.canonical_target_path(ref)
 		mut failure := ''
-		mut matched := find_in(entries, ref) or {
+		mut matched := trash.find_in(entries, ref) or {
 			failure = err.msg()
-			[]Entry{}
+			[]trash.Entry{}
 		}
 		if recursive {
 			for entry in entries {
-				if is_path_within(entry.original_path, candidate) {
+				if pathx.is_path_within(entry.original_path, candidate) {
 					matched << entry
 				}
 			}
@@ -116,7 +118,7 @@ fn resolve_refs(entries []Entry, refs []string, recursive bool, tolerant bool) !
 		if matched.len == 0 {
 			if !tolerant {
 				// Surface the regular not-found/ambiguous error for this target.
-				_ := find_in(entries, ref)!
+				_ := trash.find_in(entries, ref)!
 			}
 			if failure != '' {
 				warnings << '${failure} (skipped)'
@@ -139,7 +141,7 @@ fn resolve_refs(entries []Entry, refs []string, recursive bool, tolerant bool) !
 	}
 }
 
-fn collect_targets(entries []Entry, targets []string, recursive bool) ![]Entry {
+fn collect_targets(entries []trash.Entry, targets []string, recursive bool) ![]trash.Entry {
 	res := resolve_refs(entries, targets, recursive, false)!
 	mut selected := res.entries.clone()
 	selected.sort(a.id > b.id)
@@ -206,18 +208,18 @@ fn parse_selection_input(answer string, count int) ![]int {
 }
 
 // prompt_selection prints the candidate list and asks for a multi-selection.
-fn prompt_selection(entries []Entry) ![]Entry {
+fn prompt_selection(entries []trash.Entry) ![]trash.Entry {
 	if os.is_atty(0) == 0 {
 		return error('-i/--interactive requires a terminal')
 	}
 	if entries.len == 0 {
-		return []Entry{}
+		return []trash.Entry{}
 	}
 	for i, entry in entries {
 		println('${i + 1:3}) ${format.short_id(entry.id)}  ${format.format_age(entry.trashed_at)}  ${entry.original_path}')
 	}
 	mut done := false
-	mut picked := []Entry{}
+	mut picked := []trash.Entry{}
 	for !done {
 		answer := os.input('Select items (1,3-5), a=all, q=quit: ')
 		indices := parse_selection_input(answer, entries.len) or {

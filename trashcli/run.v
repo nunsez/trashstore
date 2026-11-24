@@ -1,6 +1,7 @@
 module trashcli
 
 import internal.format
+import internal.pathx
 import json2
 import os
 import time
@@ -41,7 +42,7 @@ pub fn run(cli Cli) ! {
 			return
 		}
 		.version {
-			println('${app_name} ${app_version} (sqlite ${trash.engine_version()})')
+			println('${trash.app_name} ${trash.app_version} (sqlite ${trash.engine_version()})')
 			return
 		}
 		else {}
@@ -72,14 +73,14 @@ pub fn run(cli Cli) ! {
 	}
 }
 
-fn warn_broken(broken []BrokenItem, cli Cli) {
+fn warn_broken(broken []trash.BrokenItem, cli Cli) {
 	p := cli.palette()
 	for item in broken {
 		eprintln(p.red('warning:') + ' broken trash item ${format.short_id(item.id)}: ${item.reason}')
 	}
 }
 
-fn run_put(store Store, cli Cli) ! {
+fn run_put(store trash.Store, cli Cli) ! {
 	interactive := cli.preview || cli.interactive
 	if !cli.dry_run && !interactive {
 		batch := store.put_many(cli.targets, recursive: cli.recursive)!
@@ -132,10 +133,10 @@ fn run_put(store Store, cli Cli) ! {
 	}
 }
 
-fn run_list(store Store, cli Cli) ! {
+fn run_list(store trash.Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
-	cwd := canonical_path(os.getwd())
+	cwd := pathx.canonical_path(os.getwd())
 	mut entries := select_entries(store, scan.entries, cli, cwd)!
 	if cli.ids {
 		for entry in entries {
@@ -163,17 +164,17 @@ fn run_list(store Store, cli Cli) ! {
 
 // select_entries resolves the common selection used by list, restore and empty.
 // The store-backed filler measures sizes lazily, before sorting and limiting.
-fn select_entries(store Store, entries []Entry, cli Cli, cwd string) ![]Entry {
-	fill := fn [store] (candidates []Entry) []Entry {
+fn select_entries(store trash.Store, entries []trash.Entry, cli Cli, cwd string) ![]trash.Entry {
+	fill := fn [store] (candidates []trash.Entry) []trash.Entry {
 		return store.fill_sizes(candidates)
 	}
 	return select(entries, selection_options(cli, cwd), fill)
 }
 
-fn run_restore(store Store, cli Cli) ! {
+fn run_restore(store trash.Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
-	cwd := canonical_path(os.getwd())
+	cwd := pathx.canonical_path(os.getwd())
 	mut selected := select_entries(store, scan.entries, cli, cwd)!
 	if selected.len == 0 {
 		if cli.json {
@@ -240,10 +241,10 @@ fn run_restore(store Store, cli Cli) ! {
 	}
 }
 
-fn run_empty(store Store, cli Cli) ! {
+fn run_empty(store trash.Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
-	cwd := canonical_path(os.getwd())
+	cwd := pathx.canonical_path(os.getwd())
 	mut selected := select_entries(store, scan.entries, cli, cwd)!
 	// Broken items (orphan payloads, rows without a payload) are never deleted
 	// unless --include-broken explicitly asks for it.
@@ -328,7 +329,7 @@ fn run_empty(store Store, cli Cli) ! {
 	}
 }
 
-fn run_stats(store Store, cli Cli) ! {
+fn run_stats(store trash.Store, cli Cli) ! {
 	stats := store.stats()
 	report := StatsReport{
 		root:    store.root
@@ -388,7 +389,7 @@ fn read_where_input(cli Cli) !WhereInput {
 	}
 }
 
-fn run_where(store Store, cli Cli) ! {
+fn run_where(store trash.Store, cli Cli) ! {
 	scan := store.scan()
 	warn_broken(scan.broken, cli)
 	input := read_where_input(cli)!
@@ -396,7 +397,7 @@ fn run_where(store Store, cli Cli) ! {
 	for warning in resolution.warnings {
 		eprintln(cli.palette().red('warning:') + ' ' + warning)
 	}
-	selected := filter_criteria(resolution.entries, ListFilter{
+	selected := trash.filter_criteria(resolution.entries, trash.ListFilter{
 		all:                true
 		kind:               cli.kind
 		grep:               cli.grep
@@ -421,7 +422,7 @@ fn run_where(store Store, cli Cli) ! {
 	}
 }
 
-fn run_doctor(store Store, cli Cli) ! {
+fn run_doctor(store trash.Store, cli Cli) ! {
 	report := store.doctor(
 		repair:          cli.doctor_repair
 		purge:           cli.doctor_purge
@@ -491,8 +492,8 @@ fn planned_restore_target(base string, mut reserved map[string]bool) string {
 	return base
 }
 
-fn open_store_or_reset(path string, cli Cli) !Store {
-	return open_with(path) or {
+fn open_store_or_reset(path string, cli Cli) !trash.Store {
+	return trash.open_with(path) or {
 		if err is trash.TrashError && err.kind == .schema_mismatch {
 			if cli.reset_store {
 				confirm_reset(path, err, true)!
@@ -501,7 +502,7 @@ fn open_store_or_reset(path string, cli Cli) !Store {
 			} else {
 				return error('${err.msg()}\nhint: re-run interactively to wipe the store, or pass --reset-store')
 			}
-			return open_with(path)
+			return trash.open_with(path)
 		}
 		return err
 	}
