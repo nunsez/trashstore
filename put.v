@@ -139,35 +139,18 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 	for p in prepared {
 		mut entry := p.entry
 		data := s.data_path(entry.id)
-		// Try the common same-device rename first; a stat pair per item is
-		// more expensive than letting the kernel return EXDEV.
-		fsx.rename_noreplace(entry.original_path, data) or {
-			if err.code() == 18 {
-				fsx.move_path_sync(entry.original_path, data, entry.id) or {
-					if os.exists(data) || os.is_link(data) {
-						// Keep the pending row so recovery can finalize it.
-						final_dirs << p.item
-						final_dirs << os.dir(entry.original_path)
-						batch.failures << batch_failure(entry.original_path, 'put', err)
-						continue
-					}
-					s.delete_item(entry.id) or {}
-					os.rmdir_all(p.item) or {}
-					batch.failures << batch_failure(entry.original_path, 'put', err)
-					continue
-				}
-			} else {
-				if os.exists(data) || os.is_link(data) {
-					final_dirs << p.item
-					final_dirs << os.dir(entry.original_path)
-					batch.failures << batch_failure(entry.original_path, 'put', err)
-					continue
-				}
-				s.delete_item(entry.id) or {}
-				os.rmdir_all(p.item) or {}
+		move_put_payload(entry.original_path, p.item) or {
+			if os.exists(data) || os.is_link(data) {
+				// Keep the pending row so recovery can finalize it.
+				final_dirs << p.item
+				final_dirs << os.dir(entry.original_path)
 				batch.failures << batch_failure(entry.original_path, 'put', err)
 				continue
 			}
+			s.delete_item(entry.id) or {}
+			os.rmdir_all(p.item) or {}
+			batch.failures << batch_failure(entry.original_path, 'put', err)
+			continue
 		}
 		failpoint('put:after-move') or {
 			final_dirs << p.item
@@ -177,8 +160,6 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 		}
 		entry.state = .trashed
 		moved << entry
-		final_dirs << p.item
-		final_dirs << os.dir(entry.original_path)
 	}
 	if moved.len > 0 {
 		mut moved_ids := []string{cap: moved.len}
@@ -193,6 +174,39 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 	}
 	batch.entries << moved
 	return batch
+}
+
+// move_put_payload moves a validated target into its item directory. The
+// source parent and the item directory are opened component by component with
+// O_NOFOLLOW and the final rename is done with renameat, so a component
+// swapped for a symlink after validation cannot redirect the move.
+fn move_put_payload(src_path string, item_dir string) ! {
+	src := fsx.open_dir(os.dir(src_path))!
+	defer {
+		src.close()
+	}
+	dst := fsx.open_dir(item_dir)!
+	defer {
+		dst.close()
+	}
+	name := os.file_name(src_path)
+	fsx.renameat_noreplace(src.fd, name, dst.fd, 'data') or {
+		if err.code() != 18 {
+			return err
+		}
+		// EXDEV: copy into the item directory, then place it with renameat.
+		tmp_name := '.put-tmp'
+		tmp := os.join_path(item_dir, tmp_name)
+		fsx.remove_any(tmp) or {}
+		defer {
+			fsx.remove_any(tmp) or {}
+		}
+		fsx.copy_path_sync(src_path, tmp)!
+		fsx.renameat_noreplace(dst.fd, tmp_name, dst.fd, 'data')!
+		fsx.remove_any(src_path)!
+	}
+	src.sync(os.dir(src_path))!
+	dst.sync(item_dir)!
 }
 
 struct PreparedPut {
@@ -210,7 +224,7 @@ fn (s Store) put_locked(path string, opts PutOptions) !Entry {
 	}
 
 	data := s.data_path(id)
-	fsx.move_path_sync(planned.original_path, data, id) or {
+	move_put_payload(planned.original_path, item) or {
 		if os.exists(data) || os.is_link(data) {
 			// The payload reached the item directory; keep the pending row so
 			// recovery can finalize it on the next run.

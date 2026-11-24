@@ -55,7 +55,6 @@ pub fn (s Store) restore_batch(entries []Entry) !RestoreBatch {
 		fl.release()
 	}
 	mut batch := RestoreBatch{}
-	mut sync_dirs := []string{}
 	mut restored_ids := []string{}
 	for entry in entries {
 		result := s.restore_one_locked(entry) or {
@@ -64,15 +63,11 @@ pub fn (s Store) restore_batch(entries []Entry) !RestoreBatch {
 		}
 		batch.results << result
 		restored_ids << entry.id
-		sync_dirs << os.dir(result.restored_to)
 	}
 	if restored_ids.len > 0 {
 		s.delete_items(restored_ids)!
 	}
-	sync_dirs << s.items_dir()
-	for dir in unique_dirs(sync_dirs) {
-		s.sync_dir(dir)!
-	}
+	s.sync_dir(s.items_dir())!
 	return batch
 }
 
@@ -97,35 +92,25 @@ fn restore_target_path(original string) !string {
 	return abs
 }
 
-fn (s Store) move_restore_data(entry_id string, data string, target string, mut item IndexItem) ! {
-	// Same-device rename is the common case; the caller batches the directory
-	// fsyncs. EXDEV (18) means the payload lives on another filesystem.
-	fsx.rename_noreplace(data, target) or {
-		if err.code() != 18 {
-			return err
-		}
-		return s.move_restore_data_cross(entry_id, data, target, mut item)
-	}
-}
-
-fn (s Store) move_restore_data_cross(entry_id string, data string, target string, mut item IndexItem) ! {
-	// Cross-device copy: journal the temporary target inode before renaming it
-	// into place, so recovery can recognize an already completed target.
-	tmp := '${target}.trash-tmp-${entry_id}'
+fn (s Store) move_restore_data_cross(entry_id string, dst fsx.Dir, parent string, dst_name string, mut item IndexItem) ! {
+	// Cross-device copy: the temporary copy must live on the target filesystem,
+	// next to the final name, so the last step is an atomic renameat. The
+	// inode is journaled before the rename so recovery can recognize an already
+	// completed target.
+	tmp_name := '${dst_name}.trash-tmp-${entry_id}'
+	tmp := os.join_path(parent, tmp_name)
 	fsx.remove_any(tmp) or {}
 	defer {
 		fsx.remove_any(tmp) or {}
 	}
-	fsx.copy_path_sync(data, tmp)!
+	fsx.copy_path_sync(s.data_path(entry_id), tmp)!
 	st := os.lstat(tmp)!
 	item.target_dev = st.dev
 	item.target_ino = st.inode
 	s.update_item(item)!
-	fsx.rename_noreplace(tmp, target)!
-	s.sync_dir(os.dir(target))!
+	fsx.renameat_noreplace(dst.fd, tmp_name, dst.fd, dst_name)!
 	failpoint('restore:after-target-rename')!
-	fsx.remove_any(data)!
-	s.sync_dir(os.dir(data))!
+	fsx.remove_any(s.data_path(entry_id))!
 }
 
 fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
@@ -143,33 +128,59 @@ fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
 		return invalid_target_error('item `${entry.id}` was rebuilt from its payload and has no original path; use `trash where ${entry.id}` to locate it')
 	}
 	safe_original := restore_target_path(item.original_path)!
-	mut target := resolve_name_conflict(safe_original)
+	parent := os.dir(safe_original)
+	base := os.file_name(safe_original)
+	data := s.data_path(entry.id)
+	st := os.lstat(data)!
+	// Both directories are opened by component with O_NOFOLLOW and every move
+	// below is relative to these descriptors, so a parent swapped for a
+	// symlink after the check above cannot redirect the payload.
+	src := fsx.open_dir(s.item_dir(entry.id))!
+	defer {
+		src.close()
+	}
+	dst := fsx.open_or_create_dir(parent) or {
+		return invalid_target_error('refusing to restore `${item.original_path}`: parent directory `${parent}` cannot be opened safely: ${err.msg()}')
+	}
+	defer {
+		dst.close()
+	}
+	mut target := ''
 	mut moved := false
-	for _ in 0 .. 100 {
+	for attempt in 0 .. 100 {
+		candidate := if attempt == 0 { base } else { '${base}~${attempt}' }
+		target = os.join_path(parent, candidate)
 		item.state = .restoring
 		item.restore_to = percent_encode_path(target)
-		st := os.lstat(s.data_path(entry.id))!
 		item.data_dev = st.dev
 		item.data_ino = st.inode
-		updated := s.update_item(item)!
-		if !updated {
+		item.target_dev = 0
+		item.target_ino = 0
+		if !s.update_item(item)! {
 			return not_restorable_error('item `${entry.id}` disappeared while restoring')
 		}
-		os.mkdir_all(os.dir(target))!
-		// Narrow the race window: re-check after creating the parents.
-		resolved_parent := canonical_path(os.dir(target))
-		if resolved_parent != os.dir(target) {
-			return invalid_target_error('refusing to restore `${item.original_path}`: parent directory `${os.dir(target)}` resolves to `${resolved_parent}`')
-		}
-		s.move_restore_data(entry.id, s.data_path(entry.id), target, mut item) or {
+		fsx.renameat_noreplace(src.fd, 'data', dst.fd, candidate) or {
+			if err.code() == 18 {
+				// EXDEV: the payload lives on another filesystem.
+				s.move_restore_data_cross(entry.id, dst, parent, candidate, mut item) or {
+					if err.code() == 17 {
+						continue
+					}
+					return err
+				}
+				moved = true
+				break
+			}
+			if err.code() == 17 {
+				// EEXIST: the name was taken after we chose it; try the next suffix.
+				continue
+			}
 			if os.exists(target) || os.is_link(target) {
 				if restore_target_matches(item, target) {
 					// The move reached the target but a later step failed. The
 					// pending row lets recovery finish without a duplicate.
 					return err
 				}
-				target = resolve_name_conflict(safe_original)
-				continue
 			}
 			return err
 		}
@@ -180,6 +191,8 @@ fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
 	if !moved {
 		return io_error('could not find a free restore target for `${item.original_path}`')
 	}
+	src.sync(s.item_dir(entry.id))!
+	dst.sync(parent)!
 	os.rmdir_all(s.item_dir(entry.id))!
 	return RestoreResult{
 		entry:       item.to_entry()

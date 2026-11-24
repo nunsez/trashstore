@@ -200,10 +200,12 @@ The store is private by design:
 - `items/`, `.gc/` and the lock file must be real files and
   directories, never symlinks. A symlinked item directory is reported as broken
   and is never repaired, restored, or purged through.
-- `restore` refuses to write when the parent of the original path no longer
-  resolves to itself, for example because a component was replaced with a
-  symlink or renamed after the item was trashed. The error names both the
-  original path and the resolved parent.
+- `put` and `restore` walk the parent directory one component at a time with
+  `openat(O_DIRECTORY|O_NOFOLLOW)` and perform the final move with `renameat`
+  relative to those descriptors, so a component swapped for a symlink between
+  validation and the move cannot redirect the payload. `restore` also refuses
+  to write when the parent of the original path no longer resolves to itself,
+  and names both the original path and the resolved parent in the error.
 - Batch APIs validate ids from library callers: `restore_batch` and
   `empty_batch` reject `''`, `.`, `..`, `a/b`, `a\b` and ids containing NUL.
 - `index.db` and `index.backup.db` contain original paths, sizes and ids. They

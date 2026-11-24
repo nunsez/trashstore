@@ -559,6 +559,40 @@ fn test_restore_refuses_symlink_parent() {
 	assert (os.read_file(file) or { '' }) == 'x'
 }
 
+fn test_restore_recreates_missing_parent_directory() {
+	root := core_dir('restore_missing_parent')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'work', 'nested', 'dir', 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	os.rmdir_all(os.join_path(root, 'work')) or { panic(err) }
+
+	store.restore(entry.id) or { panic(err) }
+	assert os.is_dir(os.join_path(root, 'work', 'nested', 'dir'))
+	assert (os.read_file(file) or { '' }) == 'x'
+}
+
+fn test_put_through_symlinked_parent_uses_canonical_path() {
+	root := core_dir('put_symlink_parent')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	real := os.join_path(root, 'real', 'dir')
+	os.mkdir_all(real) or { panic(err) }
+	os.symlink(os.join_path(root, 'real'), os.join_path(root, 'link')) or { panic(err) }
+	file := os.join_path(real, 'a.txt')
+	core_write(file, 'x')
+
+	entry := core_put(store, os.join_path(root, 'link', 'dir', 'a.txt'), false)
+	assert entry.original_path == file
+	store.restore(entry.id) or { panic(err) }
+	assert (os.read_file(file) or { '' }) == 'x'
+}
+
 fn test_restore_by_id() {
 	root := core_dir('restore_id')
 	defer {

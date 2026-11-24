@@ -170,6 +170,16 @@ Explain what is happening.
 .TP
 .B \-\-no\-color
 Disable colours. The \fBNO_COLOR\fR environment variable is also honoured.
+.TP
+.B \-\-reset\-store
+Wipe the store when its index schema is incompatible instead of asking for
+confirmation. Permanently deletes every trashed item.
+.TP
+.B \-h, \-\-help
+Show this help. With a command, show help for that command.
+.TP
+.B \-V, \-\-version
+Show the program version and the SQLite engine version.
 .SH ITEM IDS
 \fBlist\fR shows the last eight hex characters of each item id. \fBrestore\fR,
 \fBempty\fR, and \fBwhere\fR accept that short id, any unique prefix of it, a
@@ -188,9 +198,13 @@ Use \fBtrash doctor --repair\fR to measure every unknown item at once.
 must not be writable by the group or others (mode 0700). \fBitems/\fR,
 \fB.gc/\fR and the lock file must be real files and
 directories, never symlinks; a symlinked item is reported as broken and is not
-repaired, restored, or purged through. \fBrestore\fR refuses to write when the
-parent of the original path no longer resolves to itself (for example, a
-component was replaced with a symlink after the item was trashed).
+repaired, restored, or purged through. \fBput\fR and \fBrestore\fR walk the
+parent directory one component at a time without following symlinks and move
+the payload with a rename relative to the opened directory, so a component
+swapped for a symlink between validation and the move cannot redirect it.
+\fBrestore\fR also refuses to write when the parent of the original path no
+longer resolves to itself (for example, a component was replaced with a
+symlink after the item was trashed).
 \fB\-\-reset-store\fR wipes the store when its index schema is
 incompatible; without it an interactive run asks for confirmation and a
 non-interactive run leaves the store untouched. Wiping permanently deletes

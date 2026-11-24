@@ -37,7 +37,8 @@ _trash() {
                         '--limit[limit results]:number:' \
                         '--sort[sort mode]:mode:(date size path kind)' \
                         '--kind[filter kind]:kind:(file dir symlink other)' \
-                        '--grep[filter path]:pattern:' '--older-than[minimum age]:age:'
+                        '--grep[filter path]:pattern:' '--older-than[minimum age]:age:' \
+                        '--no-size[skip measuring unknown sizes]'
                     ;;
                 restore)
                     _arguments '(-r --recursive)'{-r,--recursive}'[include subtree]' \

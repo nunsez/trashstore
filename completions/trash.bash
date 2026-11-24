@@ -12,7 +12,7 @@ _trash() {
 
     case "${words[1]}" in
         list)
-            COMPREPLY=( $(compgen -W "--recursive --all --json --long --full-id --ids --limit --sort --kind --grep --older-than $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --all --json --long --full-id --ids --limit --sort --kind --grep --older-than --no-size $global_opts" -- "$cur") )
             ;;
         restore)
             COMPREPLY=( $(compgen -W "--recursive --all --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes $global_opts" -- "$cur") )

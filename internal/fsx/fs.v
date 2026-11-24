@@ -143,34 +143,3 @@ pub fn copy_path_sync(src string, dst string) ! {
 	}
 	copy_file_sync(src, dst, st.mode)!
 }
-
-// same_device reports whether src and dst share a filesystem.
-pub fn same_device(src string, dst string) !bool {
-	src_st := os.lstat(src)!
-	dst_parent_st := os.stat(os.dir(dst))!
-	return src_st.dev == dst_parent_st.dev
-}
-
-// move_path_sync renames src to dst without ever replacing dst. Across
-// filesystems it copies to a unique temporary name, fsyncs, renames without
-// replacement, and only then removes the source.
-pub fn move_path_sync(src string, dst string, tmp_suffix string) ! {
-	if same_device(src, dst)! {
-		rename_noreplace(src, dst)!
-		fsync_parent(src)!
-		if os.dir(src) != os.dir(dst) {
-			fsync_parent(dst)!
-		}
-		return
-	}
-	tmp := '${dst}.trash-tmp-${tmp_suffix}'
-	defer {
-		remove_any(tmp) or {}
-	}
-	remove_any(tmp) or {}
-	copy_path_sync(src, tmp)!
-	rename_noreplace(tmp, dst)!
-	fsync_parent(dst)!
-	remove_any(src)!
-	fsync_parent(src)!
-}

@@ -19,6 +19,7 @@ complete -c trash -n "__fish_seen_subcommand_from list" -l sort -r -d 'Sort mode
 complete -c trash -n "__fish_seen_subcommand_from list" -l kind -r -d 'Filter kind'
 complete -c trash -n "__fish_seen_subcommand_from list" -l grep -r -d 'Filter path'
 complete -c trash -n "__fish_seen_subcommand_from list" -l older-than -r -d 'Minimum age'
+complete -c trash -n "__fish_seen_subcommand_from list" -l no-size -d 'Skip measuring unknown sizes'
 
 complete -c trash -n "__fish_seen_subcommand_from restore" -s r -l recursive -d 'Include subtree'
 complete -c trash -n "__fish_seen_subcommand_from restore" -l all -d 'Use whole trash'

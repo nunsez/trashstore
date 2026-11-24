@@ -83,6 +83,10 @@ pub mut:
 	doctor_rebuild     bool
 	doctor_reindex     bool
 	targets            []string
+mut:
+	// set_flags records the flags that were actually given, in argument order.
+	// Validation uses it so that a flag is checked by presence, not by value.
+	set_flags []FlagKind
 }
 
 struct CommandMatch {
@@ -90,27 +94,34 @@ struct CommandMatch {
 	idx int
 }
 
-// find_command locates the first command token while skipping global flag values.
-fn find_command(args []string) ?CommandMatch {
+// split_flag_token splits `--name=value` into its name and value parts.
+fn split_flag_token(token string) (string, string, bool) {
+	idx := token.index_u8(`=`)
+	if idx > 0 {
+		return token[..idx], token[idx + 1..], true
+	}
+	return token, '', false
+}
+
+// find_command locates the first command token while skipping flag values.
+fn find_command(table FlagTable, args []string) ?CommandMatch {
 	mut i := 1
 	for i < args.len {
 		arg := args[i]
 		if arg == '--' {
 			return none
 		}
-		if arg in ['--store', '--limit', '--sort', '--kind', '--grep', '--older-than', '--keep'] {
-			i += 2
-			continue
-		}
-		if arg.starts_with('--store=') || arg.starts_with('--limit=')
-			|| arg.starts_with('--sort=') || arg.starts_with('--kind=')
-			|| arg.starts_with('--grep=') || arg.starts_with('--older-than=')
-			|| arg.starts_with('--keep=') {
-			i++
-			continue
-		}
 		if arg.starts_with('-') {
-			i++
+			name, _, has_value := split_flag_token(arg)
+			if spec := table.lookup(name) {
+				if spec.value != .none && !has_value {
+					i += 2
+				} else {
+					i++
+				}
+			} else {
+				i++
+			}
 			continue
 		}
 		if cmd := command_from_name(arg) {
@@ -127,21 +138,18 @@ fn find_command(args []string) ?CommandMatch {
 // Cli.parse parses argv. A known command may appear after global flags; otherwise
 // the invocation is the default `put` command.
 pub fn Cli.parse(args []string) !Cli {
+	table := flag_table()
 	mut cli := Cli{}
 	if args.len < 2 {
 		cli.command = .help
 		return cli
 	}
-	mut parse_args := args.clone()
 	mut explicit_command := false
 	mut command_idx := -1
-	if found := find_command(args) {
+	if found := find_command(table, args) {
 		cli.command = found.cmd
 		explicit_command = true
 		command_idx = found.idx
-		parse_args = [args[0]]
-		parse_args << args[1..found.idx]
-		parse_args << args[found.idx + 1..]
 	}
 	if cli.command == .help {
 		if command_idx + 1 < args.len {
@@ -154,10 +162,14 @@ pub fn Cli.parse(args []string) !Cli {
 	if cli.command == .version {
 		return cli
 	}
-	mut i := 1
 	mut stop_flags := false
-	for i < parse_args.len {
-		arg := parse_args[i]
+	mut i := 1
+	for i < args.len {
+		if i == command_idx {
+			i++
+			continue
+		}
+		arg := args[i]
 		if stop_flags {
 			cli.targets << arg
 			i++
@@ -168,7 +180,16 @@ pub fn Cli.parse(args []string) !Cli {
 			i++
 			continue
 		}
-		if arg == '-h' || arg == '--help' {
+		if !arg.starts_with('-') {
+			cli.targets << arg
+			i++
+			continue
+		}
+		name, inline_value, has_value := split_flag_token(arg)
+		spec := table.lookup(name) or {
+			return error('unknown flag `${arg}`\nhint: run `trash help ${cli.command.label()}`')
+		}
+		if spec.kind == .help {
 			current := cli.command
 			cli.command = .help
 			if explicit_command {
@@ -176,244 +197,121 @@ pub fn Cli.parse(args []string) !Cli {
 			}
 			return cli
 		}
-		if arg == '-V' || arg == '--version' {
+		if spec.kind == .version {
 			cli.command = .version
 			return cli
 		}
-		if arg == '--store' {
-			if i + 1 >= parse_args.len {
-				return error('--store requires a path')
-			}
-			cli.store = parse_args[i + 1]
-			i += 2
-			continue
-		}
-		if arg.starts_with('--store=') {
-			value := arg['--store='.len..]
-			if value == '' {
-				return error('--store requires a path')
-			}
-			cli.store = value
-			i++
-			continue
-		}
-		if arg == '--keep' || arg.starts_with('--keep=') {
-			value := if arg == '--keep' {
-				if i + 1 >= parse_args.len {
-					return error('--keep requires a number')
-				}
-				v := parse_args[i + 1]
-				i += 2
-				v
+		mut value := ''
+		if spec.value != .none {
+			if has_value {
+				value = inline_value
 			} else {
-				i++
-				arg['--keep='.len..]
-			}
-			cli.keep = strconv.atoi(value) or {
-				return error('--keep must be a number')
-			}
-			if cli.keep < 0 {
-				return error('--keep must not be negative')
-			}
-			cli.keep_set = true
-			continue
-		}
-		if arg == '--sort' || arg.starts_with('--sort=') {
-			if arg == '--sort' {
-				if i + 1 >= parse_args.len {
-					return error('--sort requires a value')
+				if i + 1 >= args.len {
+					return error('`--${spec.long}` requires ${spec.requires_hint}')
 				}
-				cli.sort = parse_args[i + 1]
-				i += 2
-			} else {
-				cli.sort = arg['--sort='.len..]
+				value = args[i + 1]
 				i++
 			}
-			continue
+		} else if has_value {
+			return error('`--${spec.long}` does not take a value')
 		}
-		if arg == '--kind' || arg.starts_with('--kind=') {
-			if arg == '--kind' {
-				if i + 1 >= parse_args.len {
-					return error('--kind requires a value')
-				}
-				cli.kind = parse_args[i + 1]
-				i += 2
-			} else {
-				cli.kind = arg['--kind='.len..]
-				i++
-			}
-			continue
-		}
-		if arg == '--grep' || arg.starts_with('--grep=') {
-			if arg == '--grep' {
-				if i + 1 >= parse_args.len {
-					return error('--grep requires a pattern')
-				}
-				cli.grep = parse_args[i + 1]
-				i += 2
-			} else {
-				cli.grep = arg['--grep='.len..]
-				i++
-			}
-			continue
-		}
-		if arg == '--older-than' || arg.starts_with('--older-than=') {
-			value := if arg == '--older-than' {
-				if i + 1 >= parse_args.len {
-					return error('--older-than requires a duration, e.g. 30d')
-				}
-				v := parse_args[i + 1]
-				i += 2
-				v
-			} else {
-				i++
-				arg['--older-than='.len..]
-			}
-			cli.older_than_seconds = parse_duration(value)!
-			cli.older_than_set = true
-			continue
-		}
-		if arg == '--limit' {
-			if i + 1 >= parse_args.len {
-				return error('--limit requires a number')
-			}
-			cli.limit = strconv.atoi(parse_args[i + 1]) or {
-				return error('--limit must be a number')
-			}
-			if cli.limit < 0 {
-				return error('--limit must not be negative')
-			}
-			cli.limit_set = true
-			i += 2
-			continue
-		}
-		if arg.starts_with('--limit=') {
-			cli.limit = strconv.atoi(arg['--limit='.len..]) or {
-				return error('--limit must be a number')
-			}
-			if cli.limit < 0 {
-				return error('--limit must not be negative')
-			}
-			cli.limit_set = true
-			i++
-			continue
-		}
-		match arg {
-			'--verbose' { cli.verbose = true }
-			'--no-color' { cli.no_color = true }
-			'--reset-store' { cli.reset_store = true }
-			'--json' { cli.json = true }
-			'--all' { cli.all = true }
-			'-r', '--recursive' { cli.recursive = true }
-			'-i', '--interactive' { cli.interactive = true }
-			'--preview' { cli.preview = true }
-			'--dry-run' { cli.dry_run = true }
-			'-y', '--yes' { cli.yes = true }
-			'--long', '--full-id' { cli.long = true }
-			'--ids' { cli.ids = true }
-			'--wait' { cli.wait = true }
-			'--no-size' { cli.no_size = true }
-			'--include-broken' { cli.include_broken = true }
-			'--repair' { cli.doctor_repair = true }
-			'--doctor-purge' { cli.doctor_purge = true }
-			'--integrity-check' { cli.doctor_integrity = true }
-			'--compact' { cli.doctor_compact = true }
-			'--backup' { cli.doctor_backup = true }
-			'--rebuild' { cli.doctor_rebuild = true }
-			'--reindex' { cli.doctor_reindex = true }
-			else {
-				if arg.starts_with('-') {
-					return error('unknown flag `${arg}`\nhint: run `trash help ${cli.command.label()}`')
-				}
-				cli.targets << arg
-			}
-		}
+		cli.apply(spec, value)!
 		i++
 	}
-	cli.validate()!
+	cli.validate(table)!
 	return cli
 }
 
-fn (cli Cli) validate() ! {
-	if cli.json && !(cli.command in [.list, .restore, .empty, .where, .stats, .doctor]) {
-		return error('--json is not supported by `${cli.command.label()}`')
+// apply stores a parsed flag in the Cli struct.
+fn (mut cli Cli) apply(spec FlagSpec, value string) ! {
+	cli.set_flags << spec.kind
+	match spec.kind {
+		.store {
+			if value == '' {
+				return error('`--store` requires a path')
+			}
+			cli.store = value
+		}
+		.verbose { cli.verbose = true }
+		.no_color { cli.no_color = true }
+		.reset_store { cli.reset_store = true }
+		.recursive { cli.recursive = true }
+		.preview { cli.preview = true }
+		.interactive { cli.interactive = true }
+		.dry_run { cli.dry_run = true }
+		.yes { cli.yes = true }
+		.all { cli.all = true }
+		.json { cli.json = true }
+		.long { cli.long = true }
+		.ids { cli.ids = true }
+		.no_size { cli.no_size = true }
+		.wait { cli.wait = true }
+		.include_broken { cli.include_broken = true }
+		.doctor_repair { cli.doctor_repair = true }
+		.doctor_purge { cli.doctor_purge = true }
+		.doctor_integrity { cli.doctor_integrity = true }
+		.doctor_compact { cli.doctor_compact = true }
+		.doctor_backup { cli.doctor_backup = true }
+		.doctor_rebuild { cli.doctor_rebuild = true }
+		.doctor_reindex { cli.doctor_reindex = true }
+		.limit {
+			cli.limit = parse_count(spec, value)!
+			cli.limit_set = true
+		}
+		.keep {
+			cli.keep = parse_count(spec, value)!
+			cli.keep_set = true
+		}
+		.older_than {
+			cli.older_than_seconds = parse_duration(value)!
+			cli.older_than_set = true
+		}
+		.sort { cli.sort = value }
+		.kind { cli.kind = value }
+		.grep { cli.grep = value }
+		.help, .version {}
 	}
-	if cli.all && !(cli.command in [.list, .restore, .empty]) {
-		return error('--all is not supported by `${cli.command.label()}`')
+}
+
+fn parse_count(spec FlagSpec, value string) !int {
+	count := strconv.atoi(value) or {
+		return error('`--${spec.long}` must be a number')
 	}
-	if cli.recursive && !(cli.command in [.put, .list, .restore, .empty, .where]) {
-		return error('--recursive is not supported by `${cli.command.label()}`')
+	if count < 0 {
+		return error('`--${spec.long}` must not be negative')
 	}
-	if cli.preview && cli.command != .put {
-		return error('--preview is only supported by `put`')
-	}
-	if cli.interactive && !(cli.command in [.put, .restore, .empty]) {
-		return error('--interactive is only supported by `put`, `restore` and `empty`')
-	}
-	if cli.dry_run && !(cli.command in [.put, .restore, .empty]) {
-		return error('--dry-run is not supported by `${cli.command.label()}`')
-	}
-	if cli.yes && !(cli.command in [.put, .restore, .empty]) {
-		return error('--yes is not supported by `${cli.command.label()}`')
-	}
-	if cli.long && cli.command != .list {
-		return error('--long is only supported by `list`')
-	}
-	if cli.ids && cli.command != .list {
-		return error('--ids is only supported by `list`')
-	}
-	if cli.ids && cli.json {
-		return error('--ids cannot be combined with --json')
-	}
-	if cli.ids && cli.long {
-		return error('--ids cannot be combined with --long')
-	}
-	if cli.limit_set && !(cli.command in [.list, .restore, .empty]) {
-		return error('--limit is only supported by `list`, `restore` and `empty`')
-	}
-	if cli.sort != '' && !(cli.command in [.list, .restore, .empty]) {
-		return error('--sort is only supported by `list`, `restore` and `empty`')
-	}
-	if (cli.kind != '' || cli.grep != '' || cli.older_than_set)
-		&& !(cli.command in [.list, .restore, .empty, .where]) {
-		return error('--kind, --grep and --older-than are only supported by `list`, `restore`, `empty` and `where`')
+	return count
+}
+
+// validate checks flag applicability and the relations declared in the table.
+fn (cli Cli) validate(table FlagTable) ! {
+	for kind in cli.set_flags {
+		spec := table.spec(kind)
+		if spec.commands.len > 0 && cli.command !in spec.commands {
+			return error('`--${spec.long}` is not supported by `${cli.command.label()}`')
+		}
+		for required in spec.requires {
+			if required !in cli.set_flags {
+				return error('`--${spec.long}` requires `--${table.spec(required).long}`')
+			}
+		}
+		for forbidden in spec.forbids {
+			if forbidden in cli.set_flags {
+				return error('`--${spec.long}` cannot be combined with `--${table.spec(forbidden).long}`')
+			}
+		}
 	}
 	if cli.sort != '' && cli.sort !in ['date', 'size', 'path', 'kind'] {
 		return error('--sort must be one of: date, size, path, kind')
 	}
-	if cli.no_size && cli.command != .list {
-		return error('--no-size is only supported by `list`')
+	if cli.kind != '' && cli.kind !in ['file', 'dir', 'symlink', 'other'] {
+		return error('--kind must be one of: file, dir, symlink, other')
 	}
 	if cli.no_size && cli.sort == 'size' {
 		return error('--no-size cannot be combined with --sort size')
 	}
-	if cli.kind != '' && cli.kind !in ['file', 'dir', 'symlink', 'other'] {
-		return error('--kind must be one of: file, dir, symlink, other')
-	}
-	if cli.wait && cli.command != .empty {
-		return error('--wait is only supported by `empty`')
-	}
-	if cli.include_broken && cli.command != .empty {
-		return error('--include-broken is only supported by `empty`')
-	}
-	if cli.include_broken && !cli.all {
-		return error('--include-broken requires --all')
-	}
-	if cli.keep_set && cli.command != .empty {
-		return error('--keep is only supported by `empty`')
-	}
-	if (cli.doctor_purge || cli.doctor_repair || cli.doctor_integrity || cli.doctor_compact
-		|| cli.doctor_backup || cli.doctor_rebuild || cli.doctor_reindex) && cli.command != .doctor {
-		return error('--repair, --doctor-purge, --integrity-check, --compact, --backup, --rebuild and --reindex are only supported by `doctor`')
-	}
-	if cli.interactive && cli.json {
-		return error('--interactive cannot be combined with --json')
-	}
 	if cli.all && cli.targets.len > 0 {
 		return error('--all cannot be combined with targets')
-	}
-	if cli.all && cli.recursive {
-		return error('--all and --recursive cannot be combined')
 	}
 	match cli.command {
 		.put {

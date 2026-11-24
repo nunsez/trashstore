@@ -21,3 +21,15 @@ pub fn rename_noreplace(src string, dst string) ! {
 		}}', errno)
 	}
 }
+
+// renameat_noreplace is rename_noreplace relative to two directory descriptors.
+pub fn renameat_noreplace(old_dirfd int, old_name string, new_dirfd int, new_name string) ! {
+	rc := C.renameat2(old_dirfd, &char(old_name.str), new_dirfd, &char(new_name.str),
+		u32(1))
+	if rc != 0 {
+		errno := C.errno
+		return error_with_code('cannot rename `${old_name}` to `${new_name}` without replacing: ${unsafe {
+			cstring_to_vstring(C.strerror(errno))
+		}}', errno)
+	}
+}
