@@ -3,6 +3,9 @@ module trash
 import internal.sqlite
 import time
 
+// SqlBind is one positional parameter for a dynamically built query.
+type SqlBind = i64 | string
+
 // IndexItem is one row of the items table: the durable source of truth for a
 // trashed item. Entry is the public, read-only projection of it.
 struct IndexItem {
@@ -238,6 +241,58 @@ fn (s Store) set_items_state(ids []string, state EntryState) ! {
 	})!
 }
 
+// journal_restores marks many rows as `restoring` in one transaction. It is
+// used to journal a whole batch of restores before any payload is moved, so a
+// crash leaves a recoverable row per item without paying one commit per item.
+// Only the columns that describe the in-flight move are written.
+fn (s Store) journal_restores(items []IndexItem) ! {
+	if items.len == 0 {
+		return
+	}
+	s.with_transaction(fn [s, items] () ! {
+		mut db := s.conn()!
+		mut st := db.prepare('UPDATE items SET state = ?, restore_to = ?, data_dev = ?, data_ino = ?, target_dev = ?, target_ino = ? WHERE id = ?')!
+		defer {
+			st.finalize()
+		}
+		for item in items {
+			st.reset()
+			st.clear_bindings()
+			st.bind_int(1, i64(int(item.state)))!
+			st.bind_text(2, percent_encode_path(item.restore_to))!
+			st.bind_int(3, item.data_dev)!
+			st.bind_int(4, i64(item.data_ino))!
+			st.bind_int(5, item.target_dev)!
+			st.bind_int(6, i64(item.target_ino))!
+			st.bind_text(7, item.id)!
+			st.step()!
+		}
+	})!
+}
+
+// clear_restore_states returns interrupted restores to trashed in one
+// transaction. The restore journal was committed for the whole batch, so a
+// per-item failure before the move must undo that row explicitly.
+fn (s Store) clear_restore_states(ids []string) ! {
+	if ids.len == 0 {
+		return
+	}
+	s.with_transaction(fn [s, ids] () ! {
+		mut db := s.conn()!
+		mut st := db.prepare("UPDATE items SET state = ?, restore_to = '', target_dev = 0, target_ino = 0 WHERE id = ?")!
+		defer {
+			st.finalize()
+		}
+		for id in ids {
+			st.reset()
+			st.clear_bindings()
+			st.bind_int(1, i64(int(EntryState.trashed)))!
+			st.bind_text(2, id)!
+			st.step()!
+		}
+	})!
+}
+
 // delete_items removes many rows in one transaction. Callers that already
 // committed a pending state use it to avoid one fsync per item.
 fn (s Store) delete_items(ids []string) ! {
@@ -293,7 +348,7 @@ pub fn (s Store) entry(id string) !Entry {
 
 fn (s Store) all_items() ![]IndexItem {
 	mut db := s.conn()!
-	mut st := db.prepare('SELECT ${item_columns} FROM items')!
+	mut st := db.prepare('SELECT ${item_columns} FROM items ORDER BY id DESC')!
 	defer {
 		st.finalize()
 	}

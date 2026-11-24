@@ -64,11 +64,74 @@ pub fn (s Store) fill_size(entry Entry) Entry {
 	return updated
 }
 
-// fill_sizes fills the size of every entry that is still unknown.
+struct MeasuredSize {
+mut:
+	index  int
+	id     string
+	size   u64
+	stored bool
+}
+
+// store_measured_sizes writes every measured size in one transaction and
+// records per row whether the update applied, so a concurrent writer that
+// already filled the size is not reported as ours.
+fn (s Store) store_measured_sizes(mut measured []MeasuredSize) ! {
+	mut db := s.conn()!
+	db.begin()!
+	mut committed := false
+	defer {
+		if !committed {
+			db.rollback()
+		}
+	}
+	mut st := db.prepare('UPDATE items SET size = ?, size_known = 1 WHERE id = ? AND size_known = 0')!
+	defer {
+		st.finalize()
+	}
+	for i in 0 .. measured.len {
+		st.reset()
+		st.clear_bindings()
+		st.bind_int(1, i64(measured[i].size))!
+		st.bind_text(2, measured[i].id)!
+		st.step()!
+		measured[i].stored = db.changes() > 0
+	}
+	db.commit()!
+	committed = true
+}
+
+// fill_sizes fills the size of every entry that is still unknown. Every
+// payload is measured first, then all results are persisted with a single
+// commit, which removes one fsync per item from `list --sort size`.
 pub fn (s Store) fill_sizes(entries []Entry) []Entry {
-	mut result := []Entry{cap: entries.len}
-	for entry in entries {
-		result << s.fill_size(entry)
+	mut result := entries.clone()
+	mut measured := []MeasuredSize{}
+	for i, entry in entries {
+		if entry.size_known || entry.kind !in [.file, .dir] || !is_safe_id(entry.id) {
+			continue
+		}
+		size, ok := measure_path(s.data_path(entry.id), entry.kind)
+		if !ok {
+			continue
+		}
+		measured << MeasuredSize{
+			index: i
+			id:    entry.id
+			size:  size
+		}
+	}
+	if measured.len == 0 {
+		return result
+	}
+	s.store_measured_sizes(mut measured) or {
+		// Best-effort: keep the entries unknown when the write fails.
+		return result
+	}
+	for m in measured {
+		if m.stored {
+			result[m.index].size = m.size
+			result[m.index].size_known = true
+		}
 	}
 	return result
 }

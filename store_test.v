@@ -636,6 +636,39 @@ fn test_list_direct_and_recursive() {
 	assert recursive.len == 2
 }
 
+fn test_list_sql_filters_with_encoded_paths() {
+	root := core_dir('list_sql')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	// Underscore is stored literally and '%' is stored as %25, so the SQL LIKE
+	// pattern must escape both instead of treating them as wildcards.
+	work := os.join_path(root, 'work_100% space')
+	a := os.join_path(work, 'a.txt')
+	b := os.join_path(work, 'sub', 'b.txt')
+	other := os.join_path(root, 'other', 'c.txt')
+	core_write(a, 'a')
+	core_write(b, 'b')
+	core_write(other, 'c')
+	core_put(store, a, false)
+	core_put(store, b, false)
+	core_put(store, other, false)
+
+	direct := store.list(cwd: work)
+	assert direct.len == 1
+	assert direct[0].original_path == a
+
+	recursive := store.list(
+		cwd:       work
+		recursive: true
+	)
+	assert recursive.len == 2
+	assert store.list(kind: 'dir').len == 0
+	assert store.list(kind: 'file').len == 3
+	assert store.list(older_than_seconds: 3600).len == 0
+}
+
 fn test_list_skips_broken_items() {
 	root := core_dir('list_broken')
 	defer {
@@ -1937,6 +1970,87 @@ fn test_failpoint_empty_recovers_by_finishing() {
 	assert store.count_items() == 0
 	assert !os.is_dir(store.item_dir(entry.id))
 	assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
+}
+
+fn test_failpoint_restore_batch_recovers_every_item() {
+	root := core_dir('fail_restore_batch')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	mut paths := []string{}
+	for name in ['a.txt', 'b.txt', 'c.txt'] {
+		path := os.join_path(root, name)
+		core_write(path, name)
+		core_put(store, path, false)
+		paths << path
+	}
+	entries := store.scan().entries
+	assert entries.len == 3
+	mut failed := false
+	with_failpoint('restore:after-move', fn [store, entries] () ! {
+		store.restore_entries(entries)!
+	}) or { failed = true }
+	assert failed
+	// Every payload moved before the injected failure; the committed batch
+	// journal must let recovery finish all of them.
+	store.recover() or { panic(err) }
+	assert store.count_items() == 0
+	for path in paths {
+		assert os.exists(path)
+	}
+}
+
+fn test_failpoint_empty_batch_recovers_every_item() {
+	root := core_dir('fail_empty_batch')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	for name in ['a.txt', 'b.txt', 'c.txt'] {
+		path := os.join_path(root, name)
+		core_write(path, name)
+		core_put(store, path, false)
+	}
+	entries := store.scan().entries
+	assert entries.len == 3
+	mut failed := false
+	with_failpoint('empty:after-rename', fn [store, entries] () ! {
+		store.empty_entries(entries)!
+	}) or { failed = true }
+	assert failed
+	store.recover() or { panic(err) }
+	assert store.count_items() == 0
+	assert (os.ls(store.gc_dir()) or { []string{} }).len == 0
+}
+
+fn test_doctor_read_only_uses_shared_lock() {
+	root := core_dir('doctor_shared')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	// Hold a shared lock from this process. A read-only doctor must be able to
+	// take its own shared lock; if it took the exclusive lock it would block.
+	fd := C.open(&char(store.lock_path().str), C.O_RDWR | C.O_CLOEXEC, 0)
+	assert fd >= 0
+	assert C.flock(fd, C.LOCK_SH) == 0
+	defer {
+		C.flock(fd, C.LOCK_UN)
+		C.close(fd)
+	}
+	done := chan bool{cap: 1}
+	spawn fn [store, done] () {
+		store.doctor(integrity_check: true) or {}
+		done <- true
+	}()
+	time.sleep(300 * time.millisecond)
+	mut finished := false
+	mut popped := false
+	if done.try_pop(mut popped) == .success {
+		finished = popped
+	}
+	assert finished, 'read-only doctor must not take the exclusive lock'
 }
 
 fn test_parallel_open_of_fresh_store() {

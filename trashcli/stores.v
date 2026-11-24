@@ -141,17 +141,24 @@ fn (mut set StoreSet) scan_all(cli Cli) ScanAll {
 }
 
 fn fill_sizes(set &StoreSet, roots map[string]string, entries []trash.Entry) []trash.Entry {
-	mut result := []trash.Entry{cap: entries.len}
-	for entry in entries {
-		root := roots[entry.id] or {
-			result << entry
-			continue
+	mut result := entries.clone()
+	// Group entries by their owning store so each store measures and persists
+	// its sizes in one transaction instead of one commit per item.
+	mut by_root := map[string][]int{}
+	for i, entry in entries {
+		root := roots[entry.id] or { continue }
+		by_root[root] << i
+	}
+	for root, indexes in by_root {
+		store := set.stores[root] or { continue }
+		mut group := []trash.Entry{cap: indexes.len}
+		for i in indexes {
+			group << entries[i]
 		}
-		store := set.stores[root] or {
-			result << entry
-			continue
+		filled := store.fill_sizes(group)
+		for j, i in indexes {
+			result[i] = filled[j]
 		}
-		result << store.fill_size(entry)
 	}
 	return result
 }

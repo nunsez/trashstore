@@ -47,30 +47,95 @@ pub fn (s Store) restore_entries(entries []Entry) ![]RestoreResult {
 	return batch.results
 }
 
+// PendingRestore is a validated restore whose journal row was written before
+// any payload was moved. The move itself may still fail per item; the caller
+// rolls those rows back.
+struct PendingRestore {
+	entry Entry
+mut:
+	item   IndexItem
+	parent string
+	base   string
+}
+
 // restore_batch restores entries under one shared lock and reports per-item
 // failures without losing successful results.
+//
+// Items are processed in chunks: each chunk is validated, journaled as
+// `restoring` in one transaction, moved, synced and deleted from the index in
+// one transaction. A crash between the phases leaves a recoverable row per
+// item, while the happy path pays a handful of commits instead of several per
+// item.
 pub fn (s Store) restore_batch(entries []Entry) !RestoreBatch {
 	mut fl := s.lock_shared()!
 	defer {
 		fl.release()
 	}
 	mut batch := RestoreBatch{}
-	mut restored_ids := []string{}
-	for entry in entries {
-		result := s.restore_one_locked(entry) or {
-			batch.failures << batch_failure(entry.id, 'restore', err)
-			continue
+	for start := 0; start < entries.len; start += batch_chunk_size {
+		end := if start + batch_chunk_size > entries.len {
+			entries.len
+		} else {
+			start + batch_chunk_size
 		}
-		batch.results << result
-		restored_ids << entry.id
-	}
-	if restored_ids.len > 0 {
-		s.delete_items(restored_ids) or {
-			return classify_error(err, 'restore', restored_ids.join(','))
+		s.restore_chunk_locked(entries[start..end], mut batch) or {
+			return classify_error(err, 'restore', 'batch')
 		}
 	}
 	s.sync_dir(s.items_dir()) or { return classify_error(err, 'restore', s.items_dir()) }
 	return batch
+}
+
+fn (s Store) restore_chunk_locked(entries []Entry, mut batch RestoreBatch) ! {
+	mut pending := []PendingRestore{}
+	for entry in entries {
+		p := s.plan_restore_locked(entry) or {
+			batch.failures << batch_failure(entry.id, 'restore', err)
+			continue
+		}
+		pending << p
+	}
+	if pending.len == 0 {
+		return
+	}
+	mut journal := []IndexItem{cap: pending.len}
+	for p in pending {
+		journal << p.item
+	}
+	s.journal_restores(journal)!
+	mut restored_ids := []string{}
+	mut rollback_ids := []string{}
+	mut restored_parents := []string{}
+	for mut p in pending {
+		result := s.execute_restore_locked(mut p) or {
+			batch.failures << batch_failure(p.entry.id, 'restore', err)
+			// Leave the committed `restoring` row alone when the payload already
+			// reached the target (a cross-device copy can leave the source in
+			// place); recovery finishes it without creating a duplicate. Otherwise
+			// roll the row back to trashed.
+			target := percent_decode_path(p.item.restore_to) or { '' }
+			if target != '' && restore_target_matches(p.item, target) {
+				continue
+			}
+			data := s.data_path(p.entry.id)
+			if os.exists(data) || os.is_link(data) {
+				rollback_ids << p.entry.id
+			}
+			continue
+		}
+		batch.results << result
+		restored_ids << p.entry.id
+		restored_parents << p.parent
+	}
+	// Persist the restored payloads before their index rows disappear: syncing
+	// each distinct target directory once replaces two fsyncs per item.
+	for parent in unique_dirs(restored_parents) {
+		s.sync_dir(parent)!
+	}
+	s.clear_restore_states(rollback_ids)!
+	if restored_ids.len > 0 {
+		s.delete_items(restored_ids)!
+	}
 }
 
 fn restore_target_matches(item IndexItem, target string) bool {
@@ -125,7 +190,9 @@ fn (s Store) move_restore_data_cross(entry_id string, src fsx.Dir, dst fsx.Dir, 
 	src.remove_child_any('data', s.data_path(entry_id))!
 }
 
-fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
+// plan_restore_locked validates one restore and computes the journal row that
+// the batch commits before any payload is moved.
+fn (s Store) plan_restore_locked(entry Entry) !PendingRestore {
 	if !is_safe_id(entry.id) {
 		return invalid_target_error('invalid item id `${entry.id}`')
 	}
@@ -144,15 +211,38 @@ fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
 	base := os.file_name(safe_original)
 	data := s.data_path(entry.id)
 	st := os.lstat(data)!
-	// Both directories are opened by component with O_NOFOLLOW and every move
-	// below is relative to these descriptors, so a parent swapped for a
-	// symlink after the check above cannot redirect the payload.
-	src := fsx.open_dir(s.item_dir(entry.id))!
+	target := os.join_path(parent, base)
+	item.state = .restoring
+	item.restore_to = percent_encode_path(target)
+	item.data_dev = st.dev
+	item.data_ino = st.inode
+	item.target_dev = 0
+	item.target_ino = 0
+	return PendingRestore{
+		entry:  entry
+		item:   item
+		parent: parent
+		base:   base
+	}
+}
+
+// execute_restore_locked moves the payload of an already journaled restore.
+// Both directories are opened by component with O_NOFOLLOW and every move is
+// relative to these descriptors, so a parent swapped for a symlink after the
+// validation in plan_restore_locked cannot redirect the payload.
+fn (s Store) execute_restore_locked(mut p PendingRestore) !RestoreResult {
+	mut item := p.item
+	defer {
+		// The caller inspects the journaled row after a failure, so keep it in
+		// sync with retries and the cross-device target inode.
+		p.item = item
+	}
+	src := fsx.open_dir(s.item_dir(p.entry.id))!
 	defer {
 		src.close()
 	}
-	dst := fsx.open_or_create_dir(parent) or {
-		return invalid_target_error('refusing to restore `${item.original_path}`: parent directory `${parent}` cannot be opened safely: ${err.msg()}')
+	dst := fsx.open_or_create_dir(p.parent) or {
+		return invalid_target_error('refusing to restore `${item.original_path}`: parent directory `${p.parent}` cannot be opened safely: ${err.msg()}')
 	}
 	defer {
 		dst.close()
@@ -160,21 +250,20 @@ fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
 	mut target := ''
 	mut moved := false
 	for attempt in 0 .. 100 {
-		candidate := if attempt == 0 { base } else { '${base}~${attempt}' }
-		target = os.join_path(parent, candidate)
-		item.state = .restoring
-		item.restore_to = percent_encode_path(target)
-		item.data_dev = st.dev
-		item.data_ino = st.inode
-		item.target_dev = 0
-		item.target_ino = 0
-		if !s.update_item(item)! {
-			return not_restorable_error('item `${entry.id}` disappeared while restoring')
+		candidate := if attempt == 0 { p.base } else { '${p.base}~${attempt}' }
+		target = os.join_path(p.parent, candidate)
+		if attempt > 0 {
+			// The batch journal recorded the first candidate; a retry must record
+			// the name it is about to use so recovery finishes on the same path.
+			item.restore_to = percent_encode_path(target)
+			if !s.update_item(item)! {
+				return not_restorable_error('item `${p.entry.id}` disappeared while restoring')
+			}
 		}
 		fsx.renameat_noreplace(src.fd, 'data', dst.fd, candidate) or {
 			if err.code() == 18 {
 				// EXDEV: the payload lives on another filesystem.
-				s.move_restore_data_cross(entry.id, src, dst, parent, candidate, mut item) or {
+				s.move_restore_data_cross(p.entry.id, src, dst, p.parent, candidate, mut item) or {
 					if err.code() == 17 {
 						continue
 					}
@@ -203,9 +292,10 @@ fn (s Store) restore_one_locked(entry Entry) !RestoreResult {
 	if !moved {
 		return io_error('could not find a free restore target for `${item.original_path}`')
 	}
-	src.sync(s.item_dir(entry.id))!
-	dst.sync(parent)!
-	os.rmdir_all(s.item_dir(entry.id))!
+	// The target directory is synced once per batch by restore_batch. The item
+	// directory is about to be removed and its parent is synced at the end, so
+	// syncing it here would only add a per-item fsync.
+	os.rmdir_all(s.item_dir(p.entry.id))!
 	return RestoreResult{
 		entry:       item.to_entry()
 		restored_to: target

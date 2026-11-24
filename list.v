@@ -29,16 +29,22 @@ pub mut:
 	broken  []BrokenItem
 }
 
+// data_exists reports whether an item has a payload, without following a
+// symlinked item directory. One lstat for the item directory guards the path
+// walk, and one for the payload replaces the old is_link/exists/is_link triple.
 fn data_exists(s Store, id string) bool {
 	if !is_safe_id(id) {
 		return false
 	}
 	// Never follow a symlinked item directory: its payload belongs to someone
 	// else, and treating it as ours would let a crafted store leak files.
-	if os.is_link(s.item_dir(id)) {
+	dir_st := os.lstat(s.item_dir(id)) or { return false }
+	if dir_st.get_filetype() != .directory {
 		return false
 	}
-	return os.exists(s.data_path(id)) || os.is_link(s.data_path(id))
+	// lstat, not stat: a dangling symlink payload still counts as present.
+	os.lstat(s.data_path(id)) or { return false }
+	return true
 }
 
 // scan loads the index once, returning valid trashed entries and broken items.
@@ -127,8 +133,86 @@ pub fn (s Store) scan() ScanResult {
 			reason: reason
 		}
 	}
-	result.entries.sort(a.id > b.id)
+	// all_items() orders by id DESC, so entries are already newest first.
 	return result
+}
+
+fn kind_from_label(label string) ?EntryKind {
+	return match label {
+		'file' { EntryKind.file }
+		'dir' { EntryKind.dir }
+		'symlink' { EntryKind.symlink }
+		'other' { EntryKind.other }
+		else { none }
+	}
+}
+
+// like_escape makes a value literal inside a LIKE pattern. Encoded paths
+// contain '%' escapes, which would otherwise be wildcards.
+fn like_escape(value string) string {
+	mut out := []u8{cap: value.len + 8}
+	for c in value.bytes() {
+		if c == `\\` || c == `%` || c == `_` {
+			out << `\\`
+		}
+		out << c
+	}
+	return out.bytestr()
+}
+
+// filtered_items loads only the rows that can match the filter. kind, age and
+// the cwd scope are pushed into SQL so `list` does not load the whole index;
+// grep still runs in V because it matches the decoded path.
+fn (s Store) filtered_items(filter ListFilter) ![]IndexItem {
+	mut db := s.conn()!
+	mut clauses := ['state = ?']
+	mut binds := []SqlBind{}
+	binds << i64(int(EntryState.trashed))
+	if filter.kind != '' {
+		kind := kind_from_label(filter.kind) or { return []IndexItem{} }
+		clauses << 'kind = ?'
+		binds << i64(int(kind))
+	}
+	if filter.older_than_seconds > 0 {
+		cutoff := time.now().unix() - filter.older_than_seconds
+		// Match filter_criteria: keep rows whose whole-second timestamp is not
+		// greater than the cutoff.
+		clauses << 'trashed_at < ?'
+		binds << (cutoff + 1) * 1_000_000_000
+	}
+	if filter.cwd != '' && !filter.all {
+		base := canonical_path(filter.cwd)
+		prefix := base.trim_right('/') + '/'
+		encoded_prefix := like_escape(percent_encode_path(prefix))
+		if filter.recursive {
+			clauses << "(original_path = ? OR original_path LIKE ? ESCAPE '\\')"
+			binds << percent_encode_path(base)
+			binds << encoded_prefix + '%'
+		} else {
+			clauses << "(original_path LIKE ? ESCAPE '\\' AND original_path NOT LIKE ? ESCAPE '\\')"
+			binds << encoded_prefix + '%'
+			binds << encoded_prefix + '%/%'
+		}
+	}
+	query := 'SELECT ${item_columns} FROM items WHERE ${clauses.join(' AND ')} ORDER BY id DESC'
+	mut st := db.prepare(query)!
+	defer {
+		st.finalize()
+	}
+	for i, bind in binds {
+		match bind {
+			i64 { st.bind_int(i + 1, bind)! }
+			string { st.bind_text(i + 1, bind)! }
+		}
+	}
+	mut items := []IndexItem{}
+	for {
+		if !st.step()! {
+			break
+		}
+		items << index_item_from_stmt(st)
+	}
+	return items
 }
 
 // filter_scope keeps the entries trashed from cwd, or from its subtree when
@@ -226,9 +310,21 @@ pub fn filter_entries(entries []Entry, filter ListFilter) []Entry {
 // its subtree. Ordering by size measures every candidate first, because sizes
 // are filled lazily.
 pub fn (s Store) list(filter ListFilter) []Entry {
-	scoped := filter_scope(s.scan().entries, filter.cwd, filter.recursive, filter.all)
-	filtered := filter_criteria(scoped, filter)
-	measured := if filter.sort == 'size' { s.fill_sizes(filtered) } else { filtered }
+	items := s.filtered_items(filter) or { return []Entry{} }
+	mut entries := []Entry{cap: items.len}
+	for item in items {
+		if item.parse_error != '' || !is_safe_id(item.id) {
+			continue
+		}
+		if !data_exists(s, item.id) {
+			continue
+		}
+		if filter.grep != '' && !item.original_path.contains(filter.grep) {
+			continue
+		}
+		entries << item.to_entry()
+	}
+	measured := if filter.sort == 'size' { s.fill_sizes(entries) } else { entries }
 	return limit_entries(sort_entries(measured, filter.sort), filter.limit)
 }
 

@@ -89,6 +89,9 @@ fn (s Store) configure_index(mut db sqlite.Db, fresh bool) ! {
 	db.exec('PRAGMA trusted_schema = OFF')!
 	db.exec('PRAGMA cache_size = -8192')!
 	db.exec('PRAGMA temp_store = MEMORY')!
+	// Filesystem paths are case-sensitive as stored, and a case-sensitive LIKE
+	// lets SQLite use the items_original_path index for prefix scopes.
+	db.exec('PRAGMA case_sensitive_like = ON')!
 	db.exec('PRAGMA synchronous = FULL')!
 }
 

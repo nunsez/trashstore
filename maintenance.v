@@ -10,30 +10,27 @@ fn sql_quote(value string) string {
 	return "'" + value.replace("'", "''") + "'"
 }
 
-// has_item reports whether the index already contains id.
-fn (s Store) has_item(id string) !bool {
-	s.get_item(id) or {
-		if err is TrashError && err.kind == .not_found {
-			return false
-		}
-		return err
-	}
-	return true
-}
-
 // rebuild_index_locked recreates rows for payloads that have no row. It is
 // deliberately lossy: the original path is not stored anywhere else, so
 // rebuilt items get an empty original_path and cannot be restored in place.
+//
+// The set of known ids is loaded once and new rows are inserted in a single
+// transaction, so rebuilding a store with many payloads does not issue one
+// lookup and one commit per item.
 fn (s Store) rebuild_index_locked() !int {
 	if os.is_link(s.items_dir()) {
 		return invalid_target_error('items directory must not be a symlink')
 	}
-	mut rebuilt := 0
+	mut known := map[string]bool{}
+	for item in s.all_items()! {
+		known[item.id] = true
+	}
+	mut new_items := []IndexItem{}
 	for id in os.ls(s.items_dir()) or { return err } {
 		if !is_safe_id(id) || os.is_link(s.item_dir(id)) || !os.is_dir(s.item_dir(id)) {
 			continue
 		}
-		if s.has_item(id)! {
+		if id in known {
 			continue
 		}
 		data := s.data_path(id)
@@ -41,19 +38,19 @@ fn (s Store) rebuild_index_locked() !int {
 			continue
 		}
 		st := os.lstat(data)!
-		s.insert_item(IndexItem{
+		new_items << IndexItem{
 			id:            id
 			original_path: ''
 			trashed_at:    time.unix(st.mtime)
 			kind:          detect_kind(data)
 			state:         .trashed
-		})!
-		rebuilt++
+		}
 	}
-	if rebuilt > 0 {
+	s.insert_items_batch(new_items)!
+	if new_items.len > 0 {
 		s.sync_dir(s.items_dir())!
 	}
-	return rebuilt
+	return new_items.len
 }
 
 // integrity_check_locked runs SQLite's integrity check and returns "ok" or the

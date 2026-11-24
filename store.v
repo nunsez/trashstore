@@ -670,8 +670,13 @@ fn (s Store) purge_broken_locked(id string) string {
 	return 'purged'
 }
 
-// doctor inspects broken items under an exclusive lock and optionally recovers
-// pending operations or detaches broken items into the garbage directory.
+// doctor inspects broken items and optionally mutates the store.
+//
+// Read-only reports (including --integrity-check) run under a shared lock, so
+// they do not block put/restore/empty. Operations that move payloads or rewrite
+// the index (--repair, --purge, --compact, --backup, --rebuild, --reindex) take
+// the exclusive lock. Size measurement writes only the size columns, so --repair
+// fills sizes under a shared lock after the exclusive phase.
 pub fn (s Store) doctor(opts DoctorOptions) !DoctorReport {
 	return s.doctor_impl(opts) or { return classify_error(err, 'doctor', s.root) }
 }
@@ -683,11 +688,34 @@ fn (s Store) doctor_impl(opts DoctorOptions) !DoctorReport {
 	if os.is_link(s.items_dir()) {
 		return invalid_target_error('items directory `${s.items_dir()}` must not be a symlink')
 	}
-	mut fl := s.lock_exclusive()!
-	defer {
+	mutating := opts.repair || opts.purge || opts.compact || opts.backup || opts.rebuild || opts.reindex
+	mut report := DoctorReport{}
+	if mutating {
+		mut fl := s.lock_exclusive()!
+		s.doctor_locked(opts, mut report) or {
+			fl.release()
+			return err
+		}
+		fl.release()
+	} else {
+		mut fl := s.lock_shared()!
+		s.doctor_locked(opts, mut report) or {
+			fl.release()
+			return err
+		}
 		fl.release()
 	}
-	mut report := DoctorReport{}
+	if opts.repair {
+		// Only size columns are written here; this does not need the exclusive
+		// store lock, so other commands are not blocked while trees are measured.
+		mut fl := s.lock_shared()!
+		s.fill_doctor_sizes(mut report)
+		fl.release()
+	}
+	return report
+}
+
+fn (s Store) doctor_locked(opts DoctorOptions, mut report DoctorReport) ! {
 	if opts.rebuild {
 		report.rebuilt = s.rebuild_index_locked()!
 	}
@@ -731,20 +759,25 @@ fn (s Store) doctor_impl(opts DoctorOptions) !DoctorReport {
 			action: action
 		}
 	}
-	if opts.repair {
-		for entry in scan.entries {
-			if entry.size_known {
-				continue
-			}
-			if s.fill_size(entry).size_known {
-				report.sized++
-			} else {
-				report.unknown++
-			}
-		}
-	}
 	if report.purged > 0 {
 		report.warnings << s.gc_locked_warnings()!
 	}
-	return report
+}
+
+// fill_doctor_sizes measures unknown sizes after the exclusive repair phase.
+// Sizes are written with one batched transaction per store.
+fn (s Store) fill_doctor_sizes(mut report DoctorReport) {
+	mut unknown := []Entry{}
+	for entry in s.scan().entries {
+		if !entry.size_known {
+			unknown << entry
+		}
+	}
+	for entry in s.fill_sizes(unknown) {
+		if entry.size_known {
+			report.sized++
+		} else {
+			report.unknown++
+		}
+	}
 }
