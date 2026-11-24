@@ -28,17 +28,16 @@ jobs:
       - run: v fmt -verify .
       - run: v vet .
       - run: v vet ./trashcli ./internal/sqlite
+      - run: v vet scripts/
       - run: v test .
       - run: v -prod test .
-      - run: ./scripts/update_sqlite.sh --check
+      - run: v run scripts/update_sqlite.vsh --check
       - name: Build (timed)
         run: time v -prod -o /tmp/trash ./cmd/trash
-      - if: runner.os == 'Linux'
-        run: shellcheck scripts/*.sh
       - run: if command -v mandoc >/dev/null; then mandoc -Tlint trash.1; fi
-      - run: ./scripts/concurrency_test.sh /tmp/trash
-      - run: ./scripts/stress_test.sh /tmp/trash
-      - run: ./scripts/cross_device_test.sh /tmp/trash
+      - run: v run scripts/concurrency_test.vsh /tmp/trash
+      - run: v run scripts/stress_test.vsh /tmp/trash
+      - run: v run scripts/cross_device_test.vsh /tmp/trash
 
   release-binaries:
     if: github.event_name == 'release'

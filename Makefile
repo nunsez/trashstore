@@ -7,6 +7,7 @@ fmt:
 
 vet:
 	v vet .
+	v vet scripts/
 
 test:
 	v test .
@@ -19,10 +20,11 @@ bench:
 
 ci: fmt vet test
 	v -prod test .
+	v run scripts/update_sqlite.vsh --check
 	v -prod -o /tmp/trash ./cmd/trash
-	./scripts/concurrency_test.sh /tmp/trash
-	./scripts/stress_test.sh /tmp/trash
-	./scripts/cross_device_test.sh /tmp/trash
+	v run scripts/concurrency_test.vsh /tmp/trash
+	v run scripts/stress_test.vsh /tmp/trash
+	v run scripts/cross_device_test.vsh /tmp/trash
 
 clean:
 	rm -f trash /tmp/trash /tmp/trashbin /tmp/trashbin_prod

@@ -24,9 +24,9 @@ declare.
 
 ## Updating
 
-Edit the pin at the top of `scripts/update_sqlite.sh` and run it. The script
+Edit the pin at the top of `scripts/update_sqlite.vsh` and run it. The script
 verifies the archive size and SHA3-256 before copying anything into the tree.
-`scripts/update_sqlite.sh --check` verifies the checked-in files against the
+`v run scripts/update_sqlite.vsh --check` verifies the checked-in files against the
 pinned SHA3-256 values without using the network.
 
 Do not edit `sqlite3.c` or `sqlite3.h` by hand.

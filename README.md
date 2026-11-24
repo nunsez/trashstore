@@ -265,7 +265,7 @@ finds their payload.
 SQLite is vendored as a C amalgamation under `thirdparty/sqlite/` and compiled
 into the binary. There are no external runtime dependencies and no network
 access at build time; the only build dependency is the V toolchain. The
-amalgamation is pinned to 3.53.4, and `scripts/update_sqlite.sh --check`
+amalgamation is pinned to 3.53.4, and `v run scripts/update_sqlite.vsh --check`
 verifies the checked-in files against the pinned hashes.
 
 Back up the index with `trash doctor --backup`, which writes a consistent
@@ -299,7 +299,8 @@ database and are not disposable caches.
 make ci
 ```
 
-`scripts/concurrency_test.sh` exercises parallel put/restore/empty operations,
-`scripts/cross_device_test.sh` covers cross-device moves and the crash journal,
-and `v run bench/bench.v 1000` benchmarks the hot paths. Crash points can be
-injected with `TRASH_TEST_FAILPOINTS=1` and `TRASH_FAILPOINT`.
+`scripts/concurrency_test.vsh` exercises parallel put/restore/empty operations,
+`scripts/stress_test.vsh` mixes concurrent put/list/restore/empty and checks for
+SQLITE_BUSY, `scripts/cross_device_test.vsh` covers cross-device moves and the
+crash journal, and `v run bench/bench.v 1000` benchmarks the hot paths. Crash
+points can be injected with `TRASH_TEST_FAILPOINTS=1` and `TRASH_FAILPOINT`.
