@@ -100,6 +100,87 @@ fn json_entries(entries []Entry) []JsonEntry {
 	return result
 }
 
+// WhereItem pairs a trashed entry with its payload location in the store.
+pub struct WhereItem {
+pub:
+	entry    Entry
+	location string
+}
+
+pub struct JsonWhere {
+pub:
+	id            string
+	location      string
+	original_path string
+	deleted_at    string
+	kind          string
+	size          u64
+	size_known    bool
+}
+
+fn json_wheres(items []WhereItem) []JsonWhere {
+	mut result := []JsonWhere{}
+	for item in items {
+		entry := item.entry
+		result << JsonWhere{
+			id:            entry.id
+			location:      item.location
+			original_path: entry.original_path
+			deleted_at:    entry.trashed_at.format_rfc3339()
+			kind:          entry.kind.label()
+			size:          entry.size
+			size_known:    entry.size_known
+		}
+	}
+	return result
+}
+
+struct WhereRow {
+	id       string
+	when     string
+	size     string
+	location string
+	path     string
+}
+
+// where_table_lines renders the locator output: full id, deletion time, size,
+// the payload path inside the store, and the original path.
+fn where_table_lines(items []WhereItem, p Palette) []string {
+	mut rows := []WhereRow{cap: items.len}
+	for item in items {
+		entry := item.entry
+		rows << WhereRow{
+			id:       entry.id
+			when:     format.format_time(entry.trashed_at)
+			size:     if entry.size_known { format.format_size(entry.size) } else { '-' }
+			location: item.location
+			path:     entry.original_path
+		}
+	}
+	mut id_width := 'ID'.len
+	mut when_width := 'DELETED'.len
+	mut size_width := 'SIZE'.len
+	mut location_width := 'LOCATION'.len
+	for row in rows {
+		id_width = max_width(id_width, row.id)
+		when_width = max_width(when_width, row.when)
+		size_width = max_width(size_width, row.size)
+		location_width = max_width(location_width, row.location)
+	}
+	mut lines := []string{cap: rows.len + 1}
+	lines << p.dim('${pad_right('ID', id_width)}  ${pad_right('DELETED', when_width)}  ${pad_left('SIZE', size_width)}  ${pad_right('LOCATION', location_width)}  ORIGINAL')
+	for row in rows {
+		lines << '${p.dim(pad_right(row.id, id_width))}  ${pad_right(row.when, when_width)}  ${pad_left(row.size, size_width)}  ${pad_right(row.location, location_width)}  ${row.path}'
+	}
+	return lines
+}
+
+fn print_where_table(items []WhereItem, p Palette) {
+	for line in where_table_lines(items, p) {
+		println(line)
+	}
+}
+
 struct TableRow {
 	id   string
 	when string

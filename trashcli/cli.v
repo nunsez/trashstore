@@ -9,6 +9,7 @@ pub enum Command {
 	restore
 	empty
 	where
+	stats
 	doctor
 	help
 	version
@@ -22,6 +23,7 @@ pub fn (c Command) label() string {
 		.restore { 'restore' }
 		.empty { 'empty' }
 		.where { 'where' }
+		.stats { 'stats' }
 		.doctor { 'doctor' }
 		.help { 'help' }
 		.version { 'version' }
@@ -35,6 +37,7 @@ fn command_from_name(name string) ?Command {
 		'restore' { .restore }
 		'empty' { .empty }
 		'where' { .where }
+		'stats' { .stats }
 		'doctor' { .doctor }
 		'help' { .help }
 		'version' { .version }
@@ -58,6 +61,7 @@ pub mut:
 	dry_run            bool
 	yes                bool
 	long               bool
+	ids                bool
 	limit              int
 	sort               string
 	kind               string
@@ -292,6 +296,7 @@ pub fn Cli.parse(args []string) !Cli {
 			'--dry-run' { cli.dry_run = true }
 			'-y', '--yes' { cli.yes = true }
 			'--long', '--full-id' { cli.long = true }
+			'--ids' { cli.ids = true }
 			'--wait' { cli.wait = true }
 			'--no-size' { cli.no_size = true }
 			'--repair' { cli.doctor_repair = true }
@@ -310,13 +315,13 @@ pub fn Cli.parse(args []string) !Cli {
 }
 
 fn (cli Cli) validate() ! {
-	if cli.json && !(cli.command in [.list, .restore, .empty, .where, .doctor]) {
+	if cli.json && !(cli.command in [.list, .restore, .empty, .where, .stats, .doctor]) {
 		return error('--json is not supported by `${cli.command.label()}`')
 	}
 	if cli.all && !(cli.command in [.list, .restore, .empty]) {
 		return error('--all is not supported by `${cli.command.label()}`')
 	}
-	if cli.recursive && !(cli.command in [.put, .list, .restore, .empty]) {
+	if cli.recursive && !(cli.command in [.put, .list, .restore, .empty, .where]) {
 		return error('--recursive is not supported by `${cli.command.label()}`')
 	}
 	if cli.preview && cli.command != .put {
@@ -334,6 +339,15 @@ fn (cli Cli) validate() ! {
 	if cli.long && cli.command != .list {
 		return error('--long is only supported by `list`')
 	}
+	if cli.ids && cli.command != .list {
+		return error('--ids is only supported by `list`')
+	}
+	if cli.ids && cli.json {
+		return error('--ids cannot be combined with --json')
+	}
+	if cli.ids && cli.long {
+		return error('--ids cannot be combined with --long')
+	}
 	if cli.limit > 0 && !(cli.command in [.list, .restore, .empty]) {
 		return error('--limit is only supported by `list`, `restore` and `empty`')
 	}
@@ -341,8 +355,8 @@ fn (cli Cli) validate() ! {
 		return error('--sort is only supported by `list`, `restore` and `empty`')
 	}
 	if (cli.kind != '' || cli.grep != '' || cli.older_than_seconds > 0)
-		&& !(cli.command in [.list, .restore, .empty]) {
-		return error('--kind, --grep and --older-than are only supported by `list`, `restore` and `empty`')
+		&& !(cli.command in [.list, .restore, .empty, .where]) {
+		return error('--kind, --grep and --older-than are only supported by `list`, `restore`, `empty` and `where`')
 	}
 	if cli.sort != '' && cli.sort !in ['date', 'size', 'path', 'kind'] {
 		return error('--sort must be one of: date, size, path, kind')
@@ -380,12 +394,12 @@ fn (cli Cli) validate() ! {
 				return error('no files or directories specified\nhint: run `trash help put`')
 			}
 		}
-		.list, .where, .doctor {
+		.list, .stats, .doctor {
 			if cli.targets.len > 0 {
 				return error('`${cli.command.label()}` does not accept targets')
 			}
 		}
-		.restore, .empty {}
+		.restore, .empty, .where {}
 		.help, .version {}
 	}
 }

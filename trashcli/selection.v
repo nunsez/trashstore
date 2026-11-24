@@ -97,6 +97,47 @@ fn collect_targets(entries []Entry, targets []string, recursive bool) ![]Entry {
 	return selected
 }
 
+// collect_refs_tolerant resolves refs like collect_targets, but treats an
+// unresolvable ref as a warning instead of an error. It returns the resolved
+// entries and the number of skipped refs, so a piped batch keeps its successful
+// results while the caller can still exit non-zero.
+fn collect_refs_tolerant(entries []Entry, refs []string, recursive bool) ([]Entry, int) {
+	mut selected := []Entry{}
+	mut seen := map[string]bool{}
+	mut failed := 0
+	for ref in refs {
+		candidate := canonical_target_path(ref)
+		mut failure := ''
+		mut matched := find_in(entries, ref) or {
+			failure = err.msg()
+			[]Entry{}
+		}
+		if recursive {
+			for entry in entries {
+				if is_path_within(entry.original_path, candidate) {
+					matched << entry
+				}
+			}
+		}
+		if matched.len == 0 {
+			if failure != '' {
+				eprintln('warning: ${failure} (skipped)')
+				failed++
+			}
+			continue
+		}
+		for entry in matched {
+			if entry.id in seen {
+				continue
+			}
+			seen[entry.id] = true
+			selected << entry
+		}
+	}
+	selected.sort(a.id > b.id)
+	return selected, failed
+}
+
 // parse_selection_input parses "1,3-5" / "a" / "q" into zero-based indices.
 fn parse_selection_input(answer string, count int) ![]int {
 	text := answer.trim_space().to_lower()

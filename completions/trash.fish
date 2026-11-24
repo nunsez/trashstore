@@ -1,4 +1,4 @@
-set -l commands put list restore empty where doctor help version
+set -l commands put list restore empty where stats doctor help version
 complete -c trash -f
 complete -c trash -n "not __fish_seen_subcommand_from $commands" -a "$commands"
 complete -c trash -l store -r -d 'Use PATH as the trash store'
@@ -13,6 +13,7 @@ complete -c trash -n "__fish_seen_subcommand_from list" -l all -d 'List whole tr
 complete -c trash -n "__fish_seen_subcommand_from list" -l json -d 'JSON output'
 complete -c trash -n "__fish_seen_subcommand_from list" -l long -d 'Long output'
 complete -c trash -n "__fish_seen_subcommand_from list" -l full-id -d 'Full ids'
+complete -c trash -n "__fish_seen_subcommand_from list" -l ids -d 'Print only full ids'
 complete -c trash -n "__fish_seen_subcommand_from list" -l limit -r -d 'Limit results'
 complete -c trash -n "__fish_seen_subcommand_from list" -l sort -r -d 'Sort mode'
 complete -c trash -n "__fish_seen_subcommand_from list" -l kind -r -d 'Filter kind'
@@ -45,7 +46,12 @@ complete -c trash -n "__fish_seen_subcommand_from empty" -l wait -d 'Wait for GC
 complete -c trash -n "__fish_seen_subcommand_from empty" -l json -d 'JSON output'
 complete -c trash -n "__fish_seen_subcommand_from empty" -s y -l yes -d 'Skip confirmation'
 
+complete -c trash -n "__fish_seen_subcommand_from where" -s r -l recursive -d 'Include target subtree'
+complete -c trash -n "__fish_seen_subcommand_from where" -l kind -r -d 'Filter kind'
+complete -c trash -n "__fish_seen_subcommand_from where" -l grep -r -d 'Filter path'
+complete -c trash -n "__fish_seen_subcommand_from where" -l older-than -r -d 'Minimum age'
 complete -c trash -n "__fish_seen_subcommand_from where" -l json -d 'JSON output'
+complete -c trash -n "__fish_seen_subcommand_from stats" -l json -d 'JSON output'
 complete -c trash -n "__fish_seen_subcommand_from doctor" -l repair -d 'Repair metadata'
 complete -c trash -n "__fish_seen_subcommand_from doctor" -l doctor-purge -d 'Remove broken items'
 complete -c trash -n "__fish_seen_subcommand_from doctor" -l json -d 'JSON output'

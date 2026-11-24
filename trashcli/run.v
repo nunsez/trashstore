@@ -16,7 +16,7 @@ struct EmptyPlan {
 	items   []JsonEntry
 }
 
-struct WhereReport {
+struct StatsReport {
 	root    string
 	items   int
 	broken  int
@@ -64,6 +64,7 @@ pub fn run(cli Cli) ! {
 		.restore { run_restore(store, cli)! }
 		.empty { run_empty(store, cli)! }
 		.where { run_where(store, cli)! }
+		.stats { run_stats(store, cli)! }
 		.doctor { run_doctor(store, cli)! }
 		.help, .version {}
 	}
@@ -134,6 +135,12 @@ fn run_list(store Store, cli Cli) ! {
 	warn_broken(scan.broken, cli)
 	cwd := canonical_path(os.getwd())
 	mut entries := select_entries(store, scan.entries, cli, cwd)!
+	if cli.ids {
+		for entry in entries {
+			println(entry.id)
+		}
+		return
+	}
 	if !cli.no_size {
 		entries = store.fill_sizes(entries)
 	}
@@ -361,9 +368,9 @@ fn run_empty_whole(store Store, cli Cli, cwd string) ! {
 	}
 }
 
-fn run_where(store Store, cli Cli) ! {
+fn run_stats(store Store, cli Cli) ! {
 	stats := store.stats()
-	report := WhereReport{
+	report := StatsReport{
 		root:    store.root
 		items:   stats.items
 		broken:  stats.broken
@@ -383,6 +390,78 @@ fn run_where(store Store, cli Cli) ! {
 	}
 	if report.broken > 0 {
 		println(cli.palette().red('${report.broken} broken item(s)'))
+	}
+}
+
+struct WhereInput {
+	refs       []string
+	from_stdin bool
+}
+
+// read_where_input decides where the refs to resolve come from. Explicit
+// positional targets always win; otherwise piped stdin is read. A terminal
+// with neither is an error, because `where` is a locator, not a selection.
+fn read_where_input(cli Cli) !WhereInput {
+	if cli.targets.len > 0 {
+		return WhereInput{
+			refs:       cli.targets
+			from_stdin: false
+		}
+	}
+	if os.is_atty(0) != 0 {
+		return error('`where` requires a target or refs on stdin\nhint: use `trash list --ids | trash where`, or `trash stats` for a summary')
+	}
+	mut refs := []string{}
+	text := os.fd_slurp(0).join('')
+	for line in text.split_into_lines() {
+		ref := line.trim_space()
+		if ref != '' {
+			refs << ref
+		}
+	}
+	if refs.len == 0 {
+		return error('no targets and no refs on stdin')
+	}
+	return WhereInput{
+		refs:       refs
+		from_stdin: true
+	}
+}
+
+fn run_where(store Store, cli Cli) ! {
+	scan := store.scan()
+	warn_broken(scan.broken, cli)
+	input := read_where_input(cli)!
+	mut selected := []Entry{}
+	mut failed := 0
+	if input.from_stdin {
+		selected, failed = collect_refs_tolerant(scan.entries, input.refs, cli.recursive)
+	} else {
+		selected = collect_targets(scan.entries, input.refs, cli.recursive)!
+	}
+	selected = filter_entries(selected, ListFilter{
+		all:                true
+		kind:               cli.kind
+		grep:               cli.grep
+		older_than_seconds: cli.older_than_seconds
+	})
+	selected = store.fill_sizes(selected)
+	mut items := []WhereItem{cap: selected.len}
+	for entry in selected {
+		items << WhereItem{
+			entry:    entry
+			location: store.payload_path(entry.id)
+		}
+	}
+	if cli.json {
+		println(json2.encode(json_wheres(items), escape_unicode: true))
+	} else if items.len == 0 {
+		println('No matching trashed items.')
+	} else {
+		print_where_table(items, cli.palette())
+	}
+	if failed > 0 {
+		return error('${failed} ref(s) could not be resolved')
 	}
 }
 

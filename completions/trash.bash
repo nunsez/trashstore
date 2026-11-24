@@ -2,7 +2,7 @@ _trash() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="put list restore empty where doctor help version"
+    local commands="put list restore empty where stats doctor help version"
     local global_opts="--store --verbose --no-color --no-sync -h --help -V --version"
 
     if [[ $cword -eq 1 ]]; then
@@ -12,7 +12,7 @@ _trash() {
 
     case "${words[1]}" in
         list)
-            COMPREPLY=( $(compgen -W "--recursive --all --json --long --full-id --limit --sort --kind --grep --older-than $global_opts" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--recursive --all --json --long --full-id --ids --limit --sort --kind --grep --older-than $global_opts" -- "$cur") )
             ;;
         restore)
             COMPREPLY=( $(compgen -W "--recursive --all --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes $global_opts" -- "$cur") )
@@ -21,6 +21,9 @@ _trash() {
             COMPREPLY=( $(compgen -W "--recursive --all --keep --limit --sort --kind --grep --older-than --interactive --dry-run --json --yes --wait $global_opts" -- "$cur") )
             ;;
         where)
+            COMPREPLY=( $(compgen -W "--recursive --kind --grep --older-than --json $global_opts" -- "$cur") )
+            ;;
+        stats)
             COMPREPLY=( $(compgen -W "--json $global_opts" -- "$cur") )
             ;;
         doctor)

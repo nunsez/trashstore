@@ -37,6 +37,14 @@ from the current directory. Use \fB--all\fR for the whole trash. This cannot be
 undone.
 .TP
 .B where
+Show where selected items are stored: the full id, deletion time, size, the
+payload location inside the trash, and the original path. Refs are resolved
+from the arguments or, when stdin is not a terminal, from one ref per line on
+stdin. \fBwhere\fR is a locator and has no selection of its own; use
+\fBlist --ids\fR to feed it a filtered set. Unresolvable refs read from stdin
+are reported as warnings and skipped, and the exit status is non-zero.
+.TP
+.B stats
 Show the trash location, the item count, and the total size of the items whose
 size is already known. Sizes are measured lazily; see \fBSIZES\fR.
 .TP
@@ -58,9 +66,9 @@ Use \fIPATH\fR as the trash store. Defaults to \fB$TRASH_STORE\fR,
 \fB$XDG_DATA_HOME/trash\fR, or \fB~/.local/share/trash\fR.
 .TP
 .B \-r, \-\-recursive
-Required to trash a directory. With \fBlist\fR, \fBrestore\fR, or
-\fBempty\fR, include the current directory subtree, or the subtree of a
-directory target.
+Required to trash a directory. With \fBlist\fR, \fBrestore\fR,
+\fBempty\fR, or \fBwhere\fR, include the current directory subtree, or the
+subtree of a directory target.
 .TP
 .B \-\-preview
 With \fBput\fR, show a preview and ask for confirmation before trashing.
@@ -80,6 +88,11 @@ Do not ask for confirmation. Required for non-interactive multi-item
 .B \-\-all
 Use the whole trash instead of the current directory. Cannot be combined with
 targets or \fB-r\fR.
+.TP
+.B \-\-ids
+With \fBlist\fR, print only full item ids, one per line, without the table
+header or footer. Cannot be combined with \fB--json\fR or \fB--long\fR. Use it
+to pipe a filtered selection into \fBwhere\fR.
 .TP
 .B \-\-json
 Print machine-readable JSON where supported.
@@ -132,9 +145,10 @@ Disable colours. The \fBNO_COLOR\fR environment variable is also honoured.
 Disable fsync durability. This is unsafe: data may be lost after a crash.
 Use only for disposable stores or filesystems that cannot fsync directories.
 .SH ITEM IDS
-\fBlist\fR shows the last eight hex characters of each item id. \fBrestore\fR
-and \fBempty\fR accept that short id, any unique prefix of it, a unique prefix
-of the full id, or the full id printed by \fB\-\-long\fR.
+\fBlist\fR shows the last eight hex characters of each item id. \fBrestore\fR,
+\fBempty\fR, and \fBwhere\fR accept that short id, any unique prefix of it, a
+unique prefix of the full id, or the full id printed by \fB\-\-long\fR or
+\fBlist --ids\fR.
 .SH SIZES
 \fBput\fR only moves the payload; the size of an item is measured the first
 time \fBlist\fR shows it and is then stored in the item metadata. The size is
@@ -161,6 +175,12 @@ trash report.txt
 trash -r build/
 .PP
 trash list -r
+.PP
+trash list --all --grep report --ids | trash where
+.PP
+trash where 8bd42d97
+.PP
+trash stats
 .PP
 trash restore -i
 .PP

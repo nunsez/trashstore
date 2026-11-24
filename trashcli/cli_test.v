@@ -45,6 +45,19 @@ fn stdin_restore(old int) {
 	}
 }
 
+fn stdin_from_file(path string) int {
+	$if !windows {
+		old := C.dup(0)
+		fd := C.open(&char(path.str), C.O_RDONLY)
+		if fd >= 0 {
+			C.dup2(fd, 0)
+			C.close(fd)
+		}
+		return old
+	}
+	return -1
+}
+
 fn cli_parse(args []string) Cli {
 	return Cli.parse(args) or { panic(err) }
 }
@@ -324,13 +337,102 @@ fn test_run_dry_run_does_not_move() {
 	assert store.list().len == 0
 }
 
-fn test_run_where() {
-	root := cli_dir('run_where')
+fn test_run_stats() {
+	root := cli_dir('run_stats')
 	defer {
 		cli_cleanup(root)
 	}
 	store_path := os.join_path(root, 'trash')
-	cli_run(['trash', '--store', store_path, 'where', '--json']) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'stats', '--json']) or { panic(err) }
+}
+
+fn test_run_where_errors_without_input() {
+	old_stdin := stdin_to_devnull()
+	defer {
+		stdin_restore(old_stdin)
+	}
+	root := cli_dir('run_where_noinput')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	mut failed := false
+	cli_run(['trash', '--store', store_path, 'where']) or { failed = true }
+	assert failed
+}
+
+fn test_run_where_resolves_target() {
+	root := cli_dir('run_where_target')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'hello')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	store := open(store_path) or { panic(err) }
+	entry := store.list()[0]
+	assert store.payload_path(entry.id) == os.join_path(store_path, 'items', entry.id, 'data')
+	cli_run(['trash', '--store', store_path, 'where', entry.id]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'where', '--json', entry.id]) or { panic(err) }
+}
+
+fn test_run_where_reads_refs_from_stdin() {
+	$if !windows {
+		root := cli_dir('run_where_stdin')
+		defer {
+			cli_cleanup(root)
+		}
+		store_path := os.join_path(root, 'trash')
+		file := os.join_path(root, 'a.txt')
+		cli_write(file, 'hello')
+		cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+		store := open(store_path) or { panic(err) }
+		id := store.list()[0].id
+		refs_file := os.join_path(root, 'refs.txt')
+		os.write_file(refs_file, '${id}\n') or { panic(err) }
+		old_stdin := stdin_from_file(refs_file)
+		defer {
+			stdin_restore(old_stdin)
+		}
+		cli_run(['trash', '--store', store_path, 'where']) or { panic(err) }
+	}
+}
+
+fn test_run_where_stdin_skips_unknown_refs() {
+	$if !windows {
+		root := cli_dir('run_where_stdin_skip')
+		defer {
+			cli_cleanup(root)
+		}
+		store_path := os.join_path(root, 'trash')
+		file := os.join_path(root, 'a.txt')
+		cli_write(file, 'hello')
+		cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+		store := open(store_path) or { panic(err) }
+		id := store.list()[0].id
+		refs_file := os.join_path(root, 'refs.txt')
+		os.write_file(refs_file, '${id}\ndeadbeefdeadbeef\n') or { panic(err) }
+		old_stdin := stdin_from_file(refs_file)
+		defer {
+			stdin_restore(old_stdin)
+		}
+		mut failed := false
+		cli_run(['trash', '--store', store_path, 'where']) or { failed = true }
+		assert failed
+	}
+}
+
+fn test_run_list_ids() {
+	root := cli_dir('run_list_ids')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'hello')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'list', '--all', '--ids']) or { panic(err) }
 }
 
 fn test_parse_filters_after_global_flags() {
@@ -615,6 +717,49 @@ fn test_parse_rejects_no_size_outside_list() {
 	mut failed := false
 	Cli.parse(['trash', 'where', '--no-size']) or { failed = true }
 	assert failed
+}
+
+fn test_parse_where_rejects_selection_only_flags() {
+	for args in [['trash', 'where', '--all'], ['trash', 'where', '--sort', 'size'], [
+		'trash',
+		'where',
+		'--limit',
+		'1',
+	]] {
+		mut failed := false
+		Cli.parse(args) or { failed = true }
+		assert failed
+	}
+}
+
+fn test_parse_where_accepts_targets_and_filters() {
+	cli := cli_parse(['trash', 'where', '-r', '--kind', 'file', '--grep', 'x', './a'])
+	assert cli.command == .where
+	assert cli.targets == ['./a']
+	assert cli.recursive
+	assert cli.kind == 'file'
+}
+
+fn test_parse_stats_rejects_extra_flags() {
+	for args in [['trash', 'stats', '--all'], ['trash', 'stats', '--ids'], [
+		'trash',
+		'stats',
+		'x',
+	]] {
+		mut failed := false
+		Cli.parse(args) or { failed = true }
+		assert failed
+	}
+}
+
+fn test_parse_list_ids_conflicts() {
+	for args in [['trash', 'list', '--ids', '--json'], ['trash', 'list', '--ids', '--long']] {
+		mut failed := false
+		Cli.parse(args) or { failed = true }
+		assert failed
+	}
+	cli := cli_parse(['trash', 'list', '--all', '--ids'])
+	assert cli.ids
 }
 
 fn test_run_list_no_size_keeps_sizes_unknown() {

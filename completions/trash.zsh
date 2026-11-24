@@ -7,7 +7,8 @@ _trash() {
         'list:List trashed items'
         'restore:Restore trashed items'
         'empty:Permanently delete trashed items'
-        'where:Show trash location'
+        'where:Show where selected items are stored'
+        'stats:Show trash location and size'
         'doctor:Report or repair broken items'
         'help:Show help'
         'version:Show version'
@@ -31,6 +32,7 @@ _trash() {
                 list)
                     _arguments '(-r --recursive)'{-r,--recursive}'[include subtree]' \
                         '--all[list whole trash]' '--json[JSON output]' '--long[long output]' '--full-id[full ids]' \
+                        '--ids[print only full ids]' \
                         '--limit[limit results]:number:' \
                         '--sort[sort mode]:mode:(date size path kind)' \
                         '--kind[filter kind]:kind:(file dir symlink other)' \
@@ -56,6 +58,12 @@ _trash() {
                         '--wait[wait for GC]'
                     ;;
                 where)
+                    _arguments '(-r --recursive)'{-r,--recursive}'[include target subtree]' \
+                        '--kind[filter kind]:kind:(file dir symlink other)' \
+                        '--grep[filter path]:pattern:' '--older-than[minimum age]:age:' \
+                        '--json[JSON output]' '*:ref:'
+                    ;;
+                stats)
                     _arguments '--json[JSON output]'
                     ;;
                 doctor)

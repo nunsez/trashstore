@@ -10,7 +10,8 @@ fn general_help() string {
 		'  list      List trashed items (direct children of cwd by default)\n' +
 		'  restore   Restore trashed items (direct children of cwd by default)\n' +
 		'  empty     Permanently delete trashed items (cwd by default)\n' +
-		'  where     Show the trash location, item count and known size\n' +
+		'  where     Show where selected items are stored (locator)\n' +
+		'  stats     Show the trash location, item count and known size\n' +
 		'  doctor    Report or repair broken trash items\n' +
 		'  help      Show help for a command\n' +
 		'  version   Show program version\n\n' +
@@ -25,6 +26,7 @@ fn general_help() string {
 		'  trash report.txt\n' +
 		'  trash -r build/\n' +
 		'  trash list -r\n' +
+		'  trash list --ids | trash where\n' +
 		'  trash restore -i\n' +
 		'  trash restore --all --limit 1\n' +
 		'  trash empty --all --yes\n'
@@ -63,11 +65,13 @@ fn command_help(c Command) string {
 				'  --grep PATTERN    Filter by original path substring\n' +
 				'  --older-than AGE  e.g. 30d, 12h, 5m\n' +
 				'  --no-size         Skip measuring unknown item sizes\n' +
+				'  --ids             Print only full ids, one per line\n' +
 				'  --store PATH      Use PATH as the trash store\n\n' +
 				'Examples:\n' +
 				'  trash list\n' +
 				'  trash list -r\n' +
-				'  trash list --all --json\n'
+				'  trash list --all --json\n' +
+				'  trash list --all --ids | trash where\n'
 		}
 		.restore {
 			'Usage: trash restore [OPTIONS] [<id|prefix|path>...]\n\n' +
@@ -120,9 +124,27 @@ fn command_help(c Command) string {
 				'  trash empty 01a203aa\n'
 		}
 		.where {
-			'Usage: trash where [OPTIONS]\n\n' +
-				'Shows the trash location, item count and the total size of the items\n' +
-				'whose size is known. Sizes are measured lazily by `list` and\n' +
+			'Usage: trash where [OPTIONS] [<id|prefix|path>...]\n\n' +
+				'Shows where selected items are stored: the full id, deletion time,\n' +
+				'size, payload location inside the trash, and original path. Refs are\n' +
+				'resolved from the arguments or, when stdin is not a terminal, from\n' +
+				'one ref per line on stdin.\n\n' +
+				'Options:\n' +
+				'  -r, --recursive   Include the subtree of a directory target\n' +
+				'  --kind KIND       file, dir, symlink or other\n' +
+				'  --grep PATTERN    Filter by original path substring\n' +
+				'  --older-than AGE  e.g. 30d, 12h, 5m\n' +
+				'  --json            Print machine-readable JSON\n' +
+				'  --store PATH      Use PATH as the trash store\n\n' +
+				'Examples:\n' +
+				'  trash where 01a203aa\n' +
+				'  trash where ./report.txt\n' +
+				'  trash list --all --grep report --ids | trash where\n'
+		}
+		.stats {
+			'Usage: trash stats [OPTIONS]\n\n' +
+				'Shows the trash location, the item count and the total size of the\n' +
+				'items whose size is known. Sizes are measured lazily by `list` and\n' +
 				'`doctor --repair`.\n\n' +
 				'Options:\n' +
 				'  --json            Print machine-readable JSON\n' +

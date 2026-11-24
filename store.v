@@ -169,6 +169,11 @@ fn (s Store) data_path(id string) string {
 	return os.join_path(s.item_dir(id), 'data')
 }
 
+// payload_path returns the absolute path of an item's payload inside the store.
+pub fn (s Store) payload_path(id string) string {
+	return s.data_path(id)
+}
+
 struct StoreLock {
 mut:
 	fd int = -1

@@ -16,7 +16,10 @@ non-interactive `Store` API.
   the current directory.
 - `list`, `restore`, and `empty` share one selection model: cwd by default,
   `-r` for the subtree, `--all` for the whole store, plus targets, filters,
-  sorting, and limits.
+  sorting, and limits. `where` resolves refs to their payload location, and
+  `stats` summarises the store.
+- `list --ids` prints one full id per line, so `trash list ... --ids | trash
+  where` locates a filtered selection without parsing a table.
 - Batch operations keep successful results and report per-item failures.
 - `--dry-run`, `--json`, and `--yes` for scripting.
 - `doctor` finds and optionally repairs broken items.
@@ -77,11 +80,25 @@ trash empty --all --yes
 trash empty --all --yes --wait
 
 # Diagnostics and scripting
-trash where
+trash stats
+trash where 8bd42d97
+trash where ./report.txt
+trash list --all --grep report --ids | trash where
 trash doctor
 trash doctor --repair
 trash list --json
 ```
+
+`where` is a locator: it accepts full ids, short ids, unique id prefixes, and
+original paths, either as arguments or as one ref per line on stdin, and prints
+the payload location inside the store together with the deletion time, size,
+and original path. It has no selection of its own; use `list --ids` to feed it
+a filtered set. When stdin is not a terminal and no targets are given, `where`
+reads refs from stdin; unresolvable refs are reported as warnings and skipped,
+and the command exits non-zero if any were skipped.
+
+`stats` prints the store location, item count, total known size, and the oldest
+and newest deletion times.
 
 `list` shows the last eight hex characters of each item id. `restore` and
 `empty` accept that short id, any unique prefix of it, a unique prefix of the
@@ -103,17 +120,18 @@ command-specific flags.
 
 ## JSON output
 
-`--json` is supported by `list`, `restore`, `empty`, `where`, and `doctor`.
-Output is never coloured; errors still go to stderr with a non-zero exit
-status. The main shapes are:
+`--json` is supported by `list`, `restore`, `empty`, `where`, `stats`, and
+`doctor`. Output is never coloured; errors still go to stderr with a non-zero
+exit status. The main shapes are:
 
 - `list` → `{ id, original_path, deleted_at, kind, size, size_known }[]`
 - `restore` → `{ id, original_path, restored_to }[]`
 - `empty` → `{ emptied, dry_run }` (plus `items` with `--dry-run`)
-- `where` → `{ root, items, broken, size, unknown, oldest, newest }`
+- `where` → `{ id, location, original_path, deleted_at, kind, size, size_known }[]`
+- `stats` → `{ root, items, broken, size, unknown, oldest, newest }`
 - `doctor` → `{ broken, repaired, purged, sized, unknown, items: [{ id, reason, action }] }`
 
-`size` is only meaningful when `size_known` is true; `where` reports the total
+`size` is only meaningful when `size_known` is true; `stats` reports the total
 of the known sizes and the number of items whose size was not measured yet.
 
 ## Library API
