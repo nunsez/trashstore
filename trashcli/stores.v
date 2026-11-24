@@ -189,6 +189,6 @@ fn warn_scoped_broken(broken []ScopedBroken, cli Cli, multi bool) {
 	p := cli.palette()
 	for scoped in broken {
 		prefix := if multi { '${scoped.root}: ' } else { '' }
-		eprintln(p.red('warning:') + ' ${prefix}broken trash item ${format.short_id(scoped.item.id)}: ${scoped.item.reason}')
+		eprintln(p.red('warning:') + ' ${sanitize_display(prefix)}broken trash item ${sanitize_display(format.short_id(scoped.item.id))}: ${sanitize_display(scoped.item.reason)}')
 	}
 }

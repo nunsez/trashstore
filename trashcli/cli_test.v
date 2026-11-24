@@ -579,7 +579,7 @@ fn test_doctor_purge_removes_broken_item() {
 	entry := store.put(file) or { panic(err) }
 	os.rm(store.payload_path(entry.id)) or { panic(err) }
 	assert store.scan().broken.len == 1
-	cli_run(['trash', '--store', store_path, 'doctor', '--doctor-purge'])!
+	cli_run(['trash', '--store', store_path, 'doctor', '--doctor-purge', '--yes'])!
 	assert store.scan().broken.len == 0
 	assert !os.is_dir(store.item_dir(entry.id))
 }
@@ -1155,4 +1155,62 @@ fn test_stats_time_parses_rfc3339() {
 	mut failed := false
 	stats_time('not-a-timestamp') or { failed = true }
 	assert failed
+}
+
+fn test_limit_zero_selects_nothing() {
+	entries := table_test_entries()
+	empty := select(entries, SelectionOptions{
+		all:   true
+		limit: 0
+	}, identity_sizes)!
+	assert empty.len == 0
+	unlimited := select(entries, SelectionOptions{ all: true }, identity_sizes)!
+	assert unlimited.len == entries.len
+	assert trash.limit_entries(entries, 0).len == 0
+	assert trash.limit_entries(entries, -1).len == entries.len
+}
+
+fn test_empty_result_message_reports_deferred_gc() {
+	assert empty_result_message(0, false) == 'No items deleted.'
+	assert empty_result_message(2, true).contains('Permanently deleted 2')
+	deferred := empty_result_message(2, false)
+	assert deferred.contains('.gc')
+	assert !deferred.contains('Permanently deleted')
+}
+
+fn test_sanitize_display_escapes_control_bytes() {
+	assert sanitize_display('a\x1b[31mb\nc\td\x7f') == 'a\\x1b[31mb\\x0ac\\x09d\\x7f'
+	assert sanitize_display('обычный путь') == 'обычный путь'
+}
+
+fn test_table_sanitizes_control_characters_in_paths() {
+	mut entries := table_test_entries()
+	entries[0].original_path = '/tmp/t/report\x1b[31m.txt'
+	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	assert !lines[1].contains('\x1b')
+	assert lines[1].contains('\\x1b')
+	// JSON stays raw for scripts.
+	raw := json_entry(entries[0])
+	assert raw.original_path == '/tmp/t/report\x1b[31m.txt'
+}
+
+fn test_doctor_purge_requires_confirmation() {
+	root := cli_dir('doctor_purge_confirm')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	store := trash.open(store_path) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'x')
+	entry := store.put(file) or { panic(err) }
+	os.rm(store.payload_path(entry.id)) or { panic(err) }
+	assert store.scan().broken.len == 1
+	mut failed := false
+	cli_run(['trash', '--store', store_path, 'doctor', '--doctor-purge']) or {
+		failed = true
+	}
+	assert failed
+	assert store.scan().broken.len == 1
+	assert os.is_dir(store.item_dir(entry.id))
 }

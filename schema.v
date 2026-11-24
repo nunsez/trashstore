@@ -148,7 +148,7 @@ fn map_index_error(err IError, path string) IError {
 	}
 	code := err.code() & 0xff
 	if code == 11 || code == 26 {
-		return invalid_target_error('`${path}` is not a usable trash index (${err.msg()}); run `trash doctor` or move the file away')
+		return invalid_target_error('`${path}` is not a usable trash index (${err.msg()}); move it away or run `trash doctor --rebuild`')
 	}
 	return err
 }
@@ -174,7 +174,16 @@ fn (s Store) open_index() !sqlite.Db {
 	if os.exists(path) && !os.is_file(path) {
 		return invalid_target_error('index path `${path}` is not a regular file')
 	}
-	mut db := sqlite.open(path) or { return map_index_error(err, path) }
+	// SQLite opens the WAL/SHM/journal sidecars itself, so SQLITE_OPEN_NOFOLLOW
+	// on the main file does not protect them. Reject symlinked sidecars before
+	// SQLite can follow one.
+	for name in ['${index_filename}-wal', '${index_filename}-shm', '${index_filename}-journal'] {
+		sidecar := os.join_path(s.root, name)
+		if os.is_link(sidecar) {
+			return invalid_target_error('index sidecar `${sidecar}` must not be a symlink')
+		}
+	}
+	mut db := sqlite.open_nofollow(path) or { return map_index_error(err, path) }
 	s.secure_index_files()
 	s.prepare_index(mut db) or {
 		db.close()

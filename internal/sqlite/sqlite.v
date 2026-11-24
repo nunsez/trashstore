@@ -28,9 +28,14 @@ pub const sqlite_null = 5
 // have to outlive the bind call.
 const sqlite_transient = voidptr(-1)
 
+const open_readonly_flag = 0x00000001
 const open_readwrite = 0x00000002
 const open_create = 0x00000004
 const open_fullmutex = 0x00010000
+// SQLITE_OPEN_NOFOLLOW refuses a database path that is a symlink. It protects
+// the main file; SQLite opens WAL/SHM/journal sidecars itself, so callers must
+// still reject symlinked sidecars before opening.
+const open_nofollow = 0x01000000
 
 fn C.sqlite3_open_v2(&char, &&C.sqlite3, i32, &char) i32
 fn C.sqlite3_close_v2(&C.sqlite3) i32
@@ -71,7 +76,14 @@ pub fn open(path string) !Db {
 
 // open_readonly opens an existing database without creating it.
 pub fn open_readonly(path string) !Db {
-	return open_with(path, 0x00000001 | open_fullmutex)
+	return open_with(path, open_readonly_flag | open_fullmutex)
+}
+
+// open_nofollow opens (and creates) a database file and refuses the path if it
+// is a symlink. SQLite also rejects a symlinked parent component, so callers
+// must canonicalise the path first; the trash store does.
+pub fn open_nofollow(path string) !Db {
+	return open_with(path, open_readwrite | open_create | open_fullmutex | open_nofollow)
 }
 
 fn open_with(path string, flags int) !Db {

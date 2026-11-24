@@ -25,7 +25,9 @@ non-interactive `Store` API.
 - Per-volume stores: files on another filesystem go to `<mount>/.trashstore-$uid`
   instead of being copied into the home store.
 - `--json` and `--yes` for scripting.
-- `doctor` finds and optionally repairs broken items.
+- `doctor` finds and optionally repairs broken items. `doctor --doctor-purge`
+  is destructive and asks for confirmation (or needs `--yes` when stdin is not
+  a terminal).
 
 ## Build
 
@@ -81,7 +83,8 @@ trash empty --all
 trash empty --all --older-than 30d --yes
 trash empty --all --keep 10 --yes
 
-# Defer or wait for permanent deletion
+# Defer or wait for permanent deletion (without --wait the payloads move to
+# .gc and are removed by a later run)
 trash empty --all --yes
 trash empty --all --yes --wait
 
@@ -117,9 +120,13 @@ printed.
 `stats` prints the store location, item count, total known size, and the oldest
 and newest deletion times.
 
-`list` shows the last eight hex characters of each item id. `restore` and
-`empty` accept that short id, any unique prefix of it, a unique prefix of the
-full id, or the full id printed by `--long`.
+`list` shows the trailing hex characters of each item id, starting at eight and
+growing for very large stores so two displayed ids stay distinguishable.
+`restore` and `empty` accept that short id, any unique prefix of it, a unique
+prefix of the full id, or the full id printed by `--long`.
+
+`--limit N` returns at most N items after sorting. `--limit 0` selects nothing;
+omitting the flag means no limit.
 
 Sizes are measured lazily: `put` only moves the payload, and the size of an
 item (the apparent size of a file, or the sum of the apparent sizes of the

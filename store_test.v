@@ -485,6 +485,7 @@ fn test_index_rejects_foreign_database_and_garbage() {
 	open(trash) or {
 		failed = true
 		assert err.msg().contains('not a usable trash index')
+		assert err.msg().contains('doctor --rebuild')
 	}
 	assert failed
 }
@@ -1466,14 +1467,16 @@ fn test_typed_find_errors() {
 	}
 	store := open(os.join_path(root, 'trash')) or { panic(err) }
 	store.find('missing') or {
-		assert err.code() == int(ErrorKind.not_found)
+		assert err is TrashError
+		assert err.kind_code() == int(ErrorKind.not_found)
 	}
 	for id in ['aaa1', 'aaa2'] {
 		core_insert(store, id, .trashed, os.join_path(root, '${id}.txt'))
 		core_write(store.data_path(id), 'x')
 	}
 	store.find('aaa') or {
-		assert err.code() == int(ErrorKind.ambiguous)
+		assert err is TrashError
+		assert err.kind_code() == int(ErrorKind.ambiguous)
 	}
 }
 
@@ -2921,5 +2924,91 @@ fn test_public_wrappers_return_typed_errors() {
 			}
 		}
 		assert put_failed
+	}
+}
+
+fn test_trash_error_kind_code_and_underlying_code() {
+	with_code := TrashError{
+		kind:       .io
+		msg:        'disk on fire'
+		error_code: 18
+	}
+	assert with_code.code() == 18
+	assert with_code.kind_code() == int(ErrorKind.io)
+
+	without_code := TrashError{
+		kind: .not_found
+		msg:  'missing'
+	}
+	assert without_code.code() == int(ErrorKind.not_found)
+	assert without_code.kind_code() == int(ErrorKind.not_found)
+}
+
+fn test_short_id_length_grows_with_store_size() {
+	assert format.short_id_length(0) == 8
+	assert format.short_id_length(1) == 8
+	assert format.short_id_length(65536) == 8
+	assert format.short_id_length(65537) == 9
+	assert format.short_id_length(1_000_000) > 8
+	assert format.short_id_length(1_000_000) < format.short_id_max_length
+	assert format.short_id_length(1 << 40) == format.short_id_max_length
+}
+
+fn test_adaptive_short_id_resolves_longer_suffix() {
+	root := core_dir('short_id_adaptive')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	ids := [
+		'11111111-1111-1111-1111-aaaabbbbdeadbeef',
+		'22222222-2222-2222-2222-ccccdddddeadbeef',
+	]
+	for id in ids {
+		core_insert(store, id, .trashed, os.join_path(root, '${id}.txt'))
+		core_write(store.data_path(id), 'x')
+	}
+	// Both ids share the eight-character short id, so the short form is
+	// ambiguous and must be rejected.
+	mut ambiguous := false
+	store.find('deadbeef') or {
+		ambiguous = true
+		assert err is TrashError
+		if err is TrashError {
+			assert err.kind == .ambiguous
+		}
+	}
+	assert ambiguous
+	// The longer adaptive form is unique.
+	first := store.find('bbbbdeadbeef')!
+	assert first.len == 1
+	assert first[0].id == ids[0]
+	second := store.find('dddddeadbeef')!
+	assert second.len == 1
+	assert second[0].id == ids[1]
+}
+
+fn test_open_rejects_symlinked_index_sidecars() {
+	root := core_dir('index_sidecar_symlink')
+	defer {
+		core_cleanup(root)
+	}
+	for name in ['index.db-wal', 'index.db-shm', 'index.db-journal'] {
+		trash_path := os.join_path(root, name.replace('.', '_'))
+		os.mkdir_all(trash_path) or { panic(err) }
+		outside := os.join_path(root, '${name}_outside')
+		os.write_file(outside, 'keep') or { panic(err) }
+		os.symlink(outside, os.join_path(trash_path, name)) or { panic(err) }
+		mut failed := false
+		open(trash_path) or {
+			failed = true
+			assert err is TrashError
+			if err is TrashError {
+				assert err.kind == .invalid_target
+			}
+			assert err.msg().contains('sidecar')
+		}
+		assert failed
+		assert (os.read_file(outside) or { '' }) == 'keep'
 	}
 }

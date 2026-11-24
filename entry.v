@@ -20,6 +20,74 @@ pub enum EntryState {
 	unknown
 }
 
+// The numeric codes below are the on-disk format of the index. They are
+// explicit so that reordering an enum can never reinterpret an existing row.
+// Never reuse or change a code without a schema version bump.
+pub const entry_kind_file = 0
+pub const entry_kind_dir = 1
+pub const entry_kind_symlink = 2
+pub const entry_kind_other = 3
+
+pub const entry_state_pending = 0
+pub const entry_state_trashed = 1
+pub const entry_state_restoring = 2
+pub const entry_state_pending_empty = 3
+
+// code returns the stable on-disk code of an entry kind.
+pub fn (k EntryKind) code() int {
+	return match k {
+		.file { entry_kind_file }
+		.dir { entry_kind_dir }
+		.symlink { entry_kind_symlink }
+		.other { entry_kind_other }
+	}
+}
+
+// entry_kind_from_code decodes an on-disk kind. Unknown values fall back to
+// `other`, which is non-destructive.
+pub fn entry_kind_from_code(code int) EntryKind {
+	if code == entry_kind_file {
+		return .file
+	}
+	if code == entry_kind_dir {
+		return .dir
+	}
+	if code == entry_kind_symlink {
+		return .symlink
+	}
+	return .other
+}
+
+// code returns the stable on-disk code of an entry state. `unknown` is never
+// written; it maps to a value outside the schema CHECK range on purpose.
+pub fn (s EntryState) code() int {
+	return match s {
+		.pending { entry_state_pending }
+		.trashed { entry_state_trashed }
+		.restoring { entry_state_restoring }
+		.pending_empty { entry_state_pending_empty }
+		.unknown { -1 }
+	}
+}
+
+// entry_state_from_code decodes an on-disk state. A value this build does not
+// know becomes `unknown`, never a destructive default.
+pub fn entry_state_from_code(code int) EntryState {
+	if code == entry_state_pending {
+		return .pending
+	}
+	if code == entry_state_trashed {
+		return .trashed
+	}
+	if code == entry_state_restoring {
+		return .restoring
+	}
+	if code == entry_state_pending_empty {
+		return .pending_empty
+	}
+	return .unknown
+}
+
 // label returns the stable on-disk name for an entry kind.
 pub fn (k EntryKind) label() string {
 	return match k {

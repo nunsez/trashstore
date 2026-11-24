@@ -16,9 +16,11 @@ pub:
 	grep               string
 	older_than_seconds i64
 	sort               string
-	limit              int
-	keep               int
-	cwd                string
+	// limit is the maximum number of entries after ordering. Negative means no
+	// limit; zero selects nothing.
+	limit int = -1
+	keep  int
+	cwd   string
 }
 
 // selection_options builds SelectionOptions from parsed CLI flags.
@@ -31,7 +33,7 @@ fn selection_options(cli Cli, cwd string) SelectionOptions {
 		grep:               cli.grep
 		older_than_seconds: cli.older_than_seconds
 		sort:               cli.sort
-		limit:              cli.limit
+		limit:              if cli.limit_set { cli.limit } else { -1 }
 		keep:               cli.keep
 		cwd:                cwd
 	}
@@ -215,8 +217,9 @@ fn prompt_selection(entries []trash.Entry) ![]trash.Entry {
 	if entries.len == 0 {
 		return []trash.Entry{}
 	}
+	id_len := format.short_id_length(entries.len)
 	for i, entry in entries {
-		println('${i + 1:3}) ${format.short_id(entry.id)}  ${format.format_age(entry.trashed_at)}  ${entry.original_path}')
+		println('${i + 1:3}) ${sanitize_display(format.short_id_len(entry.id, id_len))}  ${format.format_age(entry.trashed_at)}  ${sanitize_display(entry.original_path)}')
 	}
 	mut done := false
 	mut picked := []trash.Entry{}

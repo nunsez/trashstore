@@ -162,7 +162,7 @@ fn flag_specs() []FlagSpec {
 			kind:     .yes
 			long:     'yes'
 			short:    'y'
-			commands: [.put, .restore, .empty]
+			commands: [.put, .restore, .empty, .doctor]
 			help:     'Do not ask for confirmation'
 		},
 		FlagSpec{
@@ -199,7 +199,7 @@ fn flag_specs() []FlagSpec {
 			value_name:    'N'
 			requires_hint: 'a number'
 			commands:      [.list, .restore, .empty]
-			help:          'Use at most N items after sorting'
+			help:          'Use at most N items after sorting (0 selects nothing)'
 		},
 		FlagSpec{
 			kind:          .sort

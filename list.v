@@ -10,11 +10,13 @@ pub:
 	cwd                string
 	recursive          bool
 	all                bool
-	limit              int
 	sort               string
 	kind               string
 	grep               string
 	older_than_seconds i64
+	// limit is the maximum number of entries to return after ordering. A
+	// negative value means no limit; zero selects nothing.
+	limit int = -1
 }
 
 pub struct BrokenItem {
@@ -167,11 +169,11 @@ fn (s Store) filtered_items(filter ListFilter) ![]IndexItem {
 	mut db := s.conn()!
 	mut clauses := ['state = ?']
 	mut binds := []SqlBind{}
-	binds << i64(int(EntryState.trashed))
+	binds << i64(EntryState.trashed.code())
 	if filter.kind != '' {
 		kind := kind_from_label(filter.kind) or { return []IndexItem{} }
 		clauses << 'kind = ?'
-		binds << i64(int(kind))
+		binds << i64(kind.code())
 	}
 	if filter.older_than_seconds > 0 {
 		cutoff := time.now().unix() - filter.older_than_seconds
@@ -289,10 +291,11 @@ pub fn sort_entries(entries []Entry, sort string) []Entry {
 	return result
 }
 
-// limit_entries truncates the list after ordering. A non-positive limit keeps
-// every entry.
+// limit_entries truncates the list after ordering. A negative limit keeps
+// every entry; zero keeps none. This gives `--limit N` the literal "at most N"
+// meaning, while an unset library filter uses -1 for "no limit".
 pub fn limit_entries(entries []Entry, limit int) []Entry {
-	if limit > 0 && entries.len > limit {
+	if limit >= 0 && entries.len > limit {
 		return entries[..limit]
 	}
 	return entries
@@ -328,6 +331,21 @@ pub fn (s Store) list(filter ListFilter) []Entry {
 	return limit_entries(sort_entries(measured, filter.sort), filter.limit)
 }
 
+// short_id_matches reports whether ref is a prefix of the trailing hex part of
+// id, showing at least the default short-id width. It accepts the eight-char
+// short id and the longer adaptive ids displayed for large stores.
+fn short_id_matches(id string, ref string) bool {
+	if ref == '' {
+		return false
+	}
+	hex := id.replace('-', '')
+	width := if ref.len > format.short_id_min_length { ref.len } else { format.short_id_min_length }
+	if hex.len <= width {
+		return hex.starts_with(ref)
+	}
+	return hex[hex.len - width..].starts_with(ref)
+}
+
 // find_in resolves an item by full id, short id (as shown by `trash list`),
 // a unique prefix of either, or original path, against an already scanned entry
 // list. The result is ordered newest first.
@@ -350,7 +368,7 @@ pub fn find_in(entries []Entry, ref string) ![]Entry {
 			exact_short << entry
 		} else if entry.id.starts_with(ref) {
 			id_prefix << entry
-		} else if short.starts_with(ref) {
+		} else if short_id_matches(entry.id, ref) {
 			short_prefix << entry
 		}
 	}

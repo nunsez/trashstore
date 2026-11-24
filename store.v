@@ -410,7 +410,7 @@ fn (s Store) recover_locked() !RecoveryReport {
 			.unknown {
 				// A state this build does not understand must never trigger a
 				// destructive action: leave the payload and the row for doctor.
-				report.warnings << 'item ${item.id}: unknown state ${int(item.state)}; left untouched'
+				report.warnings << 'item ${item.id}: unknown state ${item.state.code()}; left untouched'
 			}
 			else {}
 		}

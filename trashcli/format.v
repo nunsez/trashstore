@@ -45,6 +45,31 @@ fn (p Palette) green(s string) string {
 	return s
 }
 
+// sanitize_display escapes C0 control bytes and DEL as \xNN. Paths and ids come
+// from the store and may contain terminal escape sequences; JSON and `where`
+// keep the raw value for scripts, but human-readable output must not.
+fn sanitize_display(value string) string {
+	mut out := []u8{cap: value.len}
+	for c in value.bytes() {
+		if c < 0x20 || c == 0x7f {
+			out << `\\`
+			out << `x`
+			out << hex_digit(c >> 4)
+			out << hex_digit(c & 0x0f)
+		} else {
+			out << c
+		}
+	}
+	return out.bytestr()
+}
+
+fn hex_digit(value u8) u8 {
+	if value < 10 {
+		return u8(0x30 + value)
+	}
+	return u8(0x61 + value - 10)
+}
+
 fn display_path(path string, cwd string) string {
 	if path == '' {
 		return '(unknown)'
@@ -54,9 +79,9 @@ fn display_path(path string, cwd string) string {
 	}
 	prefix := cwd.trim_right('/') + '/'
 	if path.starts_with(prefix) {
-		return path[prefix.len..]
+		return sanitize_display(path[prefix.len..])
 	}
-	return path
+	return sanitize_display(path)
 }
 
 fn pad_left(s string, width int) string {
@@ -126,10 +151,15 @@ fn max_width(current int, value string) int {
 // table_lines renders the header and one line per row. Every cell is padded to
 // the column width, so the header and all rows share the same column offsets.
 fn table_lines(entries []trash.Entry, cwd string, long bool, p Palette) []string {
+	id_len := format.short_id_length(entries.len)
 	mut rows := []TableRow{cap: entries.len}
 	for entry in entries {
 		rows << TableRow{
-			id:   if long { entry.id } else { format.short_id(entry.id) }
+			id:   sanitize_display(if long {
+				entry.id
+			} else {
+				format.short_id_len(entry.id, id_len)
+			})
 			when: if long {
 				format.format_time(entry.trashed_at)
 			} else {

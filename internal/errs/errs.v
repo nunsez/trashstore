@@ -30,8 +30,20 @@ pub fn (e TrashError) msg() string {
 	return e.msg
 }
 
-// code returns the ErrorKind as an integer for CLI exit-code mapping.
+// kind_code returns the ErrorKind as an integer for callers that classify a
+// failure. It is deliberately separate from code(), which implements IError and
+// carries the underlying OS or SQLite code.
+pub fn (e TrashError) kind_code() int {
+	return int(e.kind)
+}
+
+// code implements IError. It returns the underlying error code when one was
+// recorded, and otherwise falls back to the kind ordinal so callers always get
+// a meaningful number.
 pub fn (e TrashError) code() int {
+	if e.error_code != 0 {
+		return e.error_code
+	}
 	return int(e.kind)
 }
 

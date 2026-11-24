@@ -58,25 +58,6 @@ fn index_u64(value i64) u64 {
 	return if value < 0 { u64(0) } else { u64(value) }
 }
 
-fn index_kind(value i64) EntryKind {
-	return match value {
-		0 { .file }
-		1 { .dir }
-		2 { .symlink }
-		else { .other }
-	}
-}
-
-fn index_state(value i64) EntryState {
-	return match value {
-		0 { .pending }
-		1 { .trashed }
-		2 { .restoring }
-		3 { .pending_empty }
-		else { .unknown }
-	}
-}
-
 fn index_item_from_stmt(st &sqlite.Stmt) IndexItem {
 	mut parse_error := ''
 	original_path := percent_decode_path(st.column_text(1)) or {
@@ -93,10 +74,10 @@ fn index_item_from_stmt(st &sqlite.Stmt) IndexItem {
 		id:            st.column_text(0)
 		original_path: original_path
 		trashed_at:    time.unix_nano(st.column_int(2))
-		kind:          index_kind(st.column_int(3))
+		kind:          entry_kind_from_code(int(st.column_int(3)))
 		size:          index_u64(st.column_int(4))
 		size_known:    st.column_int(5) != 0
-		state:         index_state(st.column_int(6))
+		state:         entry_state_from_code(int(st.column_int(6)))
 		restore_to:    restore_to
 		data_dev:      st.column_int(8)
 		data_ino:      index_u64(st.column_int(9))
@@ -109,10 +90,10 @@ fn index_item_from_stmt(st &sqlite.Stmt) IndexItem {
 fn bind_item_values(mut st sqlite.Stmt, item IndexItem, first int) ! {
 	st.bind_text(first, percent_encode_path(item.original_path))!
 	st.bind_int(first + 1, item.trashed_at.unix_nano())!
-	st.bind_int(first + 2, i64(int(item.kind)))!
+	st.bind_int(first + 2, i64(item.kind.code()))!
 	st.bind_int(first + 3, i64(item.size))!
 	st.bind_int(first + 4, if item.size_known { i64(1) } else { i64(0) })!
-	st.bind_int(first + 5, i64(int(item.state)))!
+	st.bind_int(first + 5, i64(item.state.code()))!
 	st.bind_text(first + 6, percent_encode_path(item.restore_to))!
 	st.bind_int(first + 7, item.data_dev)!
 	st.bind_int(first + 8, i64(item.data_ino))!
@@ -151,7 +132,7 @@ fn (s Store) set_item_state(id string, state EntryState) !bool {
 	defer {
 		st.finalize()
 	}
-	st.bind_int(1, i64(int(state)))!
+	st.bind_int(1, i64(state.code()))!
 	st.bind_text(2, id)!
 	st.step()!
 	return db.changes() > 0
@@ -234,7 +215,7 @@ fn (s Store) set_items_state(ids []string, state EntryState) ! {
 		for id in ids {
 			st.reset()
 			st.clear_bindings()
-			st.bind_int(1, i64(int(state)))!
+			st.bind_int(1, i64(state.code()))!
 			st.bind_text(2, id)!
 			st.step()!
 		}
@@ -258,7 +239,7 @@ fn (s Store) journal_restores(items []IndexItem) ! {
 		for item in items {
 			st.reset()
 			st.clear_bindings()
-			st.bind_int(1, i64(int(item.state)))!
+			st.bind_int(1, i64(item.state.code()))!
 			st.bind_text(2, percent_encode_path(item.restore_to))!
 			st.bind_int(3, item.data_dev)!
 			st.bind_int(4, i64(item.data_ino))!
@@ -286,7 +267,7 @@ fn (s Store) clear_restore_states(ids []string) ! {
 		for id in ids {
 			st.reset()
 			st.clear_bindings()
-			st.bind_int(1, i64(int(EntryState.trashed)))!
+			st.bind_int(1, i64(EntryState.trashed.code()))!
 			st.bind_text(2, id)!
 			st.step()!
 		}
@@ -368,7 +349,7 @@ fn (s Store) trashed_items() ![]IndexItem {
 	defer {
 		st.finalize()
 	}
-	st.bind_int(1, i64(int(EntryState.trashed)))!
+	st.bind_int(1, i64(EntryState.trashed.code()))!
 	mut items := []IndexItem{}
 	for {
 		if !st.step()! {
@@ -385,7 +366,7 @@ fn (s Store) pending_items() ![]IndexItem {
 	defer {
 		st.finalize()
 	}
-	st.bind_int(1, i64(int(EntryState.trashed)))!
+	st.bind_int(1, i64(EntryState.trashed.code()))!
 	mut items := []IndexItem{}
 	for {
 		if !st.step()! {

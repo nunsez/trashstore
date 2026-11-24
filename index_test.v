@@ -186,3 +186,40 @@ fn test_index_table_is_strict() {
 	count := store.item_count()!
 	assert count == 0
 }
+
+// The numeric kind/state codes are the on-disk format. Pin them so that
+// reordering an enum cannot silently reinterpret existing rows.
+fn test_entry_kind_and_state_codes_are_stable() {
+	assert EntryKind.file.code() == 0
+	assert EntryKind.dir.code() == 1
+	assert EntryKind.symlink.code() == 2
+	assert EntryKind.other.code() == 3
+	assert entry_kind_from_code(0) == .file
+	assert entry_kind_from_code(1) == .dir
+	assert entry_kind_from_code(2) == .symlink
+	assert entry_kind_from_code(3) == .other
+	assert entry_kind_from_code(99) == .other
+
+	assert EntryState.pending.code() == 0
+	assert EntryState.trashed.code() == 1
+	assert EntryState.restoring.code() == 2
+	assert EntryState.pending_empty.code() == 3
+	assert EntryState.unknown.code() == -1
+	assert entry_state_from_code(0) == .pending
+	assert entry_state_from_code(1) == .trashed
+	assert entry_state_from_code(2) == .restoring
+	assert entry_state_from_code(3) == .pending_empty
+	assert entry_state_from_code(99) == .unknown
+}
+
+fn test_index_reads_explicit_numeric_codes() {
+	root, store := index_test_store('codes')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	mut db := store.conn()!
+	db.exec("INSERT INTO items (id, original_path, trashed_at, kind, state, restore_to) VALUES ('raw', '/raw', 0, 2, 3, '')")!
+	item := store.get_item('raw')!
+	assert item.kind == .symlink
+	assert item.state == .pending_empty
+}

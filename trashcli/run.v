@@ -195,7 +195,7 @@ fn run_put(mut set StoreSet, cli Cli) ! {
 				registered[plan.store.root] = true
 			}
 			if cli.verbose {
-				println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
+				println('Trashed ${sanitize_display(entry.original_path)} (${sanitize_display(format.short_id(entry.id))})')
 			}
 		}
 	} else {
@@ -219,7 +219,7 @@ fn run_put(mut set StoreSet, cli Cli) ! {
 			batch := store.put_many(targets, recursive: cli.recursive)!
 			if cli.verbose {
 				for entry in batch.entries {
-					println('Trashed ${entry.original_path} (${format.short_id(entry.id)})')
+					println('Trashed ${sanitize_display(entry.original_path)} (${sanitize_display(format.short_id(entry.id))})')
 				}
 			}
 			for failure in batch.failures {
@@ -330,7 +330,7 @@ fn run_restore(mut set StoreSet, cli Cli, cwd string) ! {
 		println(json2.encode(plans, escape_unicode: true))
 	} else {
 		for result in results {
-			println('Restored ${result.entry.original_path} -> ${result.restored_to}')
+			println('Restored ${sanitize_display(result.entry.original_path)} -> ${sanitize_display(result.restored_to)}')
 		}
 	}
 	if failures.len > 0 {
@@ -391,7 +391,7 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 			report := store.doctor(purge: true)!
 			for item in report.items {
 				if item.action != 'purged' {
-					eprintln(cli.palette().red('warning:') + ' could not remove broken item ${format.short_id(item.id)}: ${item.reason} (${item.action})')
+					eprintln(cli.palette().red('warning:') + ' could not remove broken item ${sanitize_display(format.short_id(item.id))}: ${sanitize_display(item.reason)} (${sanitize_display(item.action)})')
 				}
 			}
 		}
@@ -406,7 +406,7 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 	if cli.json {
 		println(json2.encode(EmptyReport{ emptied: emptied }, escape_unicode: true))
 	} else {
-		println('Permanently deleted ${emptied} item(s).')
+		println(empty_result_message(emptied, cli.wait))
 	}
 	if failures.len > 0 {
 		for failure in failures {
@@ -414,6 +414,19 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 		}
 		return error('${failures.len} item(s) could not be deleted')
 	}
+}
+
+// empty_result_message describes where the payloads went. Without --wait the
+// items are only moved into .gc, so claiming they were permanently deleted
+// would be wrong until a later GC pass actually removes them.
+fn empty_result_message(emptied int, wait bool) string {
+	if emptied == 0 {
+		return 'No items deleted.'
+	}
+	if wait {
+		return 'Permanently deleted ${emptied} item(s).'
+	}
+	return 'Moved ${emptied} item(s) to `.gc`; they will be deleted later (use --wait to delete now).'
 }
 
 // stats_time parses the RFC3339 timestamp stored in StoreStats. A parse failure
@@ -560,6 +573,10 @@ fn run_where(mut set StoreSet, cli Cli) ! {
 }
 
 fn run_doctor(mut set StoreSet, cli Cli) ! {
+	if cli.doctor_purge && !confirm_doctor_purge(&set, cli)! {
+		println('Aborted.')
+		return
+	}
 	mut all := DoctorAllReport{}
 	for root in set.roots {
 		store := set.stores[root] or { continue }
@@ -600,10 +617,28 @@ fn run_doctor(mut set StoreSet, cli Cli) ! {
 	}
 }
 
+// confirm_doctor_purge asks before --doctor-purge detaches broken payloads.
+// Purging is destructive, so it is confirmed even for a single item and
+// requires --yes when stdin is not a terminal.
+fn confirm_doctor_purge(set &StoreSet, cli Cli) !bool {
+	if cli.yes {
+		return true
+	}
+	mut count := 0
+	for root in set.roots {
+		store := set.stores[root] or { continue }
+		count += store.scan().broken.len
+	}
+	if count == 0 {
+		return true
+	}
+	return confirm_action(count, 'Purge', '', cli, true)
+}
+
 fn print_doctor_report(report trash.DoctorReport, cli Cli) {
 	mut printed := false
 	for warning in report.warnings {
-		eprintln(cli.palette().red('warning:') + ' ${warning}')
+		eprintln(cli.palette().red('warning:') + ' ${sanitize_display(warning)}')
 	}
 	if report.integrity != '' {
 		println('integrity: ${report.integrity}')
@@ -631,7 +666,7 @@ fn print_doctor_report(report trash.DoctorReport, cli Cli) {
 		}
 	} else {
 		for item in report.items {
-			println('${format.short_id(item.id)}  ${item.reason}  [${item.action}]')
+			println('${sanitize_display(format.short_id(item.id))}  ${sanitize_display(item.reason)}  [${sanitize_display(item.action)}]')
 		}
 		println('${report.broken} broken item(s), ${report.repaired} repaired, ${report.purged} purged.')
 	}
