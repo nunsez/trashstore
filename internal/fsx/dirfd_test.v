@@ -206,6 +206,59 @@ fn test_measure_tree_does_not_follow_a_swapped_symlink() ! {
 	assert dir.measure_tree(item)! == 0
 }
 
+fn test_measure_child_measures_files_and_trees() ! {
+	root := dirfd_root('measure_child')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	item := os.join_path(root, 'item')
+	os.mkdir(item)!
+	os.write_file(os.join_path(item, 'file'), '12345')!
+	os.mkdir(os.join_path(item, 'tree'))!
+	os.write_file(os.join_path(item, 'tree', 'nested'), '123')!
+
+	dir := open_dir(item)!
+	defer {
+		dir.close()
+	}
+	assert dir.measure_child('file', os.join_path(item, 'file'))! == u64(5)
+	assert dir.measure_child('tree', os.join_path(item, 'tree'))! == u64(3)
+}
+
+fn test_measure_child_does_not_follow_a_symlink_payload() ! {
+	root := dirfd_root('measure_child_link')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	item := os.join_path(root, 'item')
+	os.mkdir(item)!
+	victim := os.join_path(root, 'victim')
+	os.write_file(victim, 'victim-data')!
+	os.symlink(victim, os.join_path(item, 'data'))!
+
+	dir := open_dir(item)!
+	defer {
+		dir.close()
+	}
+	// A symlink contributes nothing: reporting the target's size would claim
+	// the item is bigger than the payload the store actually holds.
+	assert dir.measure_child('data', os.join_path(item, 'data'))! == 0
+}
+
+fn test_measure_child_rejects_unsafe_names() {
+	root := dirfd_root('measure_child_name')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	dir := open_dir(root)!
+	defer {
+		dir.close()
+	}
+	mut failed := false
+	dir.measure_child('../data', '') or { failed = true }
+	assert failed
+}
+
 fn test_copy_path_sync_recreates_symlinks_without_following_them() ! {
 	root := dirfd_root('copy_path_symlink')
 	defer {

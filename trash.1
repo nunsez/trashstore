@@ -181,7 +181,12 @@ payloads (item directories without an index row). Without this flag such
 payloads are reported but never deleted, matching \fBdoctor\fR's default.
 .TP
 .B \-\-verbose
-Explain what is happening.
+Explain what is happening and show every warning. By default at most 20
+warnings are printed per run, followed by a count of the suppressed ones.
+.TP
+.B \-\-quiet
+Suppress warnings. Errors and the exit status are unaffected. Cannot be
+combined with \fB--verbose\fR.
 .TP
 .B \-\-no\-color
 Disable colours. The \fBNO_COLOR\fR environment variable is also honoured.

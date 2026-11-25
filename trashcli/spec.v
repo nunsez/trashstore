@@ -7,6 +7,7 @@ enum FlagKind {
 	version
 	store
 	verbose
+	quiet
 	no_color
 	reset_store
 	recursive
@@ -104,9 +105,16 @@ fn flag_specs() []FlagSpec {
 			help:          'Use PATH as the trash store'
 		},
 		FlagSpec{
-			kind: .verbose
-			long: 'verbose'
-			help: 'Explain what is happening'
+			kind:    .verbose
+			long:    'verbose'
+			forbids: [.quiet]
+			help:    'Explain what is happening and show every warning'
+		},
+		FlagSpec{
+			kind:    .quiet
+			long:    'quiet'
+			forbids: [.verbose]
+			help:    'Suppress warnings'
 		},
 		FlagSpec{
 			kind: .no_color

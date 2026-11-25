@@ -92,6 +92,7 @@ pub fn run(cli Cli) ! {
 	mut set := new_store_set(cli, spec)!
 	defer {
 		set.close()
+		set.diag.flush()
 	}
 	match cli.command {
 		.put {
@@ -191,7 +192,7 @@ fn run_put(mut set StoreSet, cli Cli) ! {
 				continue
 			}
 			if !registered[plan.store.root] {
-				set.register_target(plan.store, cli)
+				set.register_target(plan.store)
 				registered[plan.store.root] = true
 			}
 			if cli.verbose {
@@ -228,7 +229,7 @@ fn run_put(mut set StoreSet, cli Cli) ! {
 				}
 				failures << 'Failed to trash ${failure.subject}: ${failure.message}'
 			}
-			set.register_target(groups[root][0].store, cli)
+			set.register_target(groups[root][0].store)
 		}
 	}
 	if failures.len > 0 {
@@ -237,8 +238,8 @@ fn run_put(mut set StoreSet, cli Cli) ! {
 }
 
 fn run_list(mut set StoreSet, cli Cli, cwd string) ! {
-	scan := set.scan_all(cli)
-	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
+	scan := set.scan_all()
+	set.warn_broken(scan.broken)
 	mut entries := select_entries(&set, scan, cli, cwd)!
 	if cli.ids {
 		for entry in entries {
@@ -275,8 +276,8 @@ fn select_entries(set &StoreSet, scan ScanAll, cli Cli, cwd string) ![]trash.Ent
 }
 
 fn run_restore(mut set StoreSet, cli Cli, cwd string) ! {
-	scan := set.scan_all(cli)
-	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
+	scan := set.scan_all()
+	set.warn_broken(scan.broken)
 	mut selected := select_entries(&set, scan, cli, cwd)!
 	if selected.len == 0 {
 		if cli.json {
@@ -342,8 +343,8 @@ fn run_restore(mut set StoreSet, cli Cli, cwd string) ! {
 }
 
 fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
-	scan := set.scan_all(cli)
-	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
+	scan := set.scan_all()
+	set.warn_broken(scan.broken)
 	mut selected := select_entries(&set, scan, cli, cwd)!
 	// Broken items (orphan payloads, rows without a payload) are never deleted
 	// unless --include-broken explicitly asks for it.
@@ -391,7 +392,7 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 			report := store.doctor(purge: true)!
 			for item in report.items {
 				if item.action != 'purged' {
-					eprintln(cli.palette().red('warning:') + ' could not remove broken item ${sanitize_display(format.short_id(item.id))}: ${sanitize_display(item.reason)} (${sanitize_display(item.action)})')
+					set.diag.warn('could not remove broken item ${sanitize_display(broken_id_label(item.id))}: ${sanitize_display(item.reason)} (${sanitize_display(item.action)})')
 				}
 			}
 		}
@@ -540,12 +541,12 @@ fn read_where_input(cli Cli) !WhereInput {
 }
 
 fn run_where(mut set StoreSet, cli Cli) ! {
-	scan := set.scan_all(cli)
-	warn_scoped_broken(scan.broken, cli, set.roots.len > 1)
+	scan := set.scan_all()
+	set.warn_broken(scan.broken)
 	input := read_where_input(cli)!
 	resolution := resolve_refs(scan.entries, input.refs, cli.recursive, input.from_stdin)!
 	for warning in resolution.warnings {
-		eprintln(cli.palette().red('warning:') + ' ' + warning)
+		set.diag.warn(warning)
 	}
 	selected := trash.filter_criteria(resolution.entries, trash.ListFilter{
 		kind:               cli.kind
@@ -614,7 +615,7 @@ fn run_doctor(mut set StoreSet, cli Cli) ! {
 			}
 			println(scoped.root)
 		}
-		print_doctor_report(scoped.report, cli)
+		set.print_doctor_report(scoped.report, cli)
 	}
 }
 
@@ -636,10 +637,10 @@ fn confirm_doctor_purge(set &StoreSet, cli Cli) !bool {
 	return confirm_action(count, 'Purge', '', cli, true)
 }
 
-fn print_doctor_report(report trash.DoctorReport, cli Cli) {
+fn (mut set StoreSet) print_doctor_report(report trash.DoctorReport, cli Cli) {
 	mut printed := false
 	for warning in report.warnings {
-		eprintln(cli.palette().red('warning:') + ' ${sanitize_display(warning)}')
+		set.diag.warn(sanitize_display(warning))
 	}
 	if report.integrity != '' {
 		println('integrity: ${report.integrity}')
@@ -667,7 +668,7 @@ fn print_doctor_report(report trash.DoctorReport, cli Cli) {
 		}
 	} else {
 		for item in report.items {
-			println('${sanitize_display(format.short_id(item.id))}  ${sanitize_display(item.reason)}  [${sanitize_display(item.action)}]')
+			println('${sanitize_display(broken_id_label(item.id))}  ${sanitize_display(item.reason)}  [${sanitize_display(item.action)}]')
 		}
 		println('${report.broken} broken item(s), ${report.repaired} repaired, ${report.purged} purged.')
 	}

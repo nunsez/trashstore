@@ -8,6 +8,10 @@ import os
 // Symlinks are never followed and special files contribute nothing. The second
 // result reports whether the walk completed; a partial walk is reported as
 // unknown so a half-measured tree is never stored as an exact size.
+//
+// measure_path works on a plain path. Store operations use measure_entry, which
+// opens the item directory descriptor-relative and cannot be redirected by a
+// symlinked item directory.
 pub fn measure_path(path string, kind EntryKind) (u64, bool) {
 	if kind == .file {
 		st := os.lstat(path) or { return 0, false }
@@ -17,6 +21,23 @@ pub fn measure_path(path string, kind EntryKind) (u64, bool) {
 		return measure_dir(path)
 	}
 	return 0, true
+}
+
+// measure_entry measures an item's payload without following a symlinked item
+// directory. The item directory is opened one component at a time with
+// O_NOFOLLOW, and the payload is measured relative to that descriptor, so a
+// store entry that was swapped for a symlink reports an unknown size instead of
+// reading files outside the store.
+fn (s Store) measure_entry(entry Entry) (u64, bool) {
+	if !is_safe_id(entry.id) || entry.kind !in [.file, .dir] {
+		return 0, false
+	}
+	mut dir := fsx.open_dir(s.item_dir(entry.id)) or { return 0, false }
+	defer {
+		dir.close()
+	}
+	size := dir.measure_child('data', s.data_path(entry.id)) or { return 0, false }
+	return size, true
 }
 
 fn measure_dir(path string) (u64, bool) {
@@ -35,10 +56,10 @@ fn measure_dir(path string) (u64, bool) {
 // result in the index. It is best-effort: an item that disappeared, is being
 // restored or cannot be read keeps its unknown size instead of failing.
 pub fn (s Store) fill_size(entry Entry) Entry {
-	if entry.size_known || entry.kind !in [.file, .dir] || !is_safe_id(entry.id) {
+	if entry.size_known {
 		return entry
 	}
-	size, ok := measure_path(s.data_path(entry.id), entry.kind)
+	size, ok := s.measure_entry(entry)
 	if !ok {
 		return entry
 	}
@@ -95,10 +116,10 @@ pub fn (s Store) fill_sizes(entries []Entry) []Entry {
 	mut result := entries.clone()
 	mut measured := []MeasuredSize{}
 	for i, entry in entries {
-		if entry.size_known || entry.kind !in [.file, .dir] || !is_safe_id(entry.id) {
+		if entry.size_known {
 			continue
 		}
-		size, ok := measure_path(s.data_path(entry.id), entry.kind)
+		size, ok := s.measure_entry(entry)
 		if !ok {
 			continue
 		}

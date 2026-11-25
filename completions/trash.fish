@@ -2,7 +2,8 @@ set -l commands put list restore empty where stats doctor help version
 complete -c trash -f
 complete -c trash -n "not __fish_seen_subcommand_from $commands" -a "$commands"
 complete -c trash -l store -r -d 'Use PATH as the trash store'
-complete -c trash -l verbose -d 'Explain what is happening'
+complete -c trash -l verbose -d 'Explain what is happening and show every warning'
+complete -c trash -l quiet -d 'Suppress warnings'
 complete -c trash -l no-color -d 'Disable colours'
 complete -c trash -l reset-store -d 'Wipe the store if the index schema is incompatible'
 complete -c trash -s h -l help -d 'Show help'

@@ -122,6 +122,47 @@ fn test_resolve_store_uses_xdg_data_home() {
 	assert (resolve_store('') or { panic(err) }) == pathx.canonical_path(os.join_path(xdg, 'trashstore'))
 }
 
+fn test_diagnostics_caps_warnings() {
+	mut diag := Diagnostics{
+		limit: 2
+	}
+	for i in 0 .. 5 {
+		diag.warn('w${i}')
+	}
+	assert diag.lines == ['w0', 'w1']
+	assert diag.hidden == 3
+}
+
+fn test_diagnostics_verbose_has_no_cap() {
+	cli := cli_parse(['trash', '--verbose', 'list'])
+	mut diag := new_diagnostics(cli)
+	assert diag.limit == 0
+	for i in 0 .. warn_limit + 5 {
+		diag.warn('w${i}')
+	}
+	assert diag.lines.len == warn_limit + 5
+	assert diag.hidden == 0
+}
+
+fn test_diagnostics_quiet_drops_every_warning() {
+	cli := cli_parse(['trash', '--quiet', 'list'])
+	mut diag := new_diagnostics(cli)
+	assert diag.quiet
+	for _ in 0 .. 5 {
+		diag.warn('boom')
+	}
+	assert diag.lines.len == 0
+	assert diag.hidden == 0
+}
+
+fn test_parse_quiet_and_verbose_are_exclusive() {
+	quiet := cli_parse(['trash', '--quiet', 'list'])
+	assert quiet.quiet
+	mut failed := false
+	Cli.parse(['trash', '--quiet', '--verbose', 'list']) or { failed = true }
+	assert failed, '--quiet and --verbose must not be combined'
+}
+
 fn test_parse_finds_command_after_global_flags() {
 	cli := cli_parse(['trash', '--store', '/tmp/g', 'list', '-r', '--json'])
 	assert cli.command == .list
@@ -1013,10 +1054,11 @@ fn test_padding_uses_printable_width() {
 	assert max_width(5, '界') == 5
 }
 
-fn test_parse_rejects_removed_quiet_flag() {
-	mut failed := false
-	Cli.parse(['trash', 'list', '--quiet']) or { failed = true }
-	assert failed
+fn test_parse_accepts_quiet_before_command() {
+	cli := cli_parse(['trash', '--quiet', '--store', '/tmp/q', 'list'])
+	assert cli.quiet
+	assert cli.command == .list
+	assert cli.store == '/tmp/q'
 }
 
 fn test_parse_rejects_no_size_with_sort_size() {

@@ -24,7 +24,13 @@ fn main() {
 		paths << path
 	}
 
-	store := trash.open(store_root) or { panic(err) }
+	mut store := trash.open(store_root) or { panic(err) }
+	// Close before removing the work directory: a live store keeps its WAL and
+	// SHM sidecars open, and deleting the directory underneath it would hide a
+	// leak. Defers run last-in-first-out, so this close runs before rmdir_all.
+	defer {
+		store.close()
+	}
 	mut start := time.now()
 	put_batch := store.put_many(paths) or { panic(err) }
 	if put_batch.failures.len > 0 {
@@ -80,6 +86,14 @@ fn main() {
 	start = time.now()
 	store.gc() or { panic(err) }
 	gc_ms := elapsed_ms(start)
+
+	store.close()
+	for name in ['index.db-wal', 'index.db-shm', 'index.db-journal'] {
+		path := os.join_path(store_root, name)
+		if os.exists(path) {
+			panic('${name} was left behind after close()')
+		}
+	}
 
 	println('items=${n} wal=${wal_kb}KB put=${put_ms:.1f}ms scan=${scan_ms:.1f}ms find_full_id=${find_ms:.1f}ms list_fill=${list_fill_ms:.1f}ms list_cached=${list_cached_ms:.1f}ms batch_restore=${restore_ms:.1f}ms empty=${empty_ms:.1f}ms gc=${gc_ms:.1f}ms')
 }

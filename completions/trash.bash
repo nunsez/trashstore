@@ -3,7 +3,7 @@ _trash() {
     _init_completion || return
 
     local commands="put list restore empty where stats doctor help version"
-    local global_opts="--store --verbose --no-color --reset-store -h --help -V --version"
+    local global_opts="--store --verbose --quiet --no-color --reset-store -h --help -V --version"
 
     # The command is the first non-flag word, not necessarily words[1]:
     # `trash --store x list` must complete `list`'s flags.

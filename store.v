@@ -372,7 +372,10 @@ fn (s Store) recover_locked() !RecoveryReport {
 	return report
 }
 
-fn is_safe_id(id string) bool {
+// is_safe_id reports whether id can be used as a single path component inside
+// items/. It rejects empty, dot, dot-dot, separators and NUL, which are the only
+// ways an id from the index or from a library caller could escape the store.
+pub fn is_safe_id(id string) bool {
 	return id != '' && id != '.' && id != '..' && !id.contains('/') && !id.contains('\\')
 		&& !id.contains('\x00')
 }

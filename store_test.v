@@ -2603,6 +2603,103 @@ fn test_fill_size_ignores_unsafe_id() {
 	assert got.size == 0
 }
 
+// regression: fill_size never measures through a symlinked item directory. A
+// crafted store could otherwise report (and persist) the size of files that
+// belong to someone else.
+fn test_fill_size_does_not_follow_symlinked_item_dir() {
+	$if !windows {
+		root := core_dir('fill_symlink_item')
+		defer {
+			core_cleanup(root)
+		}
+		store := open(os.join_path(root, 'trash')) or { panic(err) }
+		file := os.join_path(root, 'a.txt')
+		core_write(file, 'hello')
+		entry := core_put(store, file, false)
+
+		// Replace items/<id> with a symlink to a directory outside the store
+		// that holds a payload of a very different size.
+		outside := os.join_path(root, 'outside')
+		core_write(os.join_path(outside, 'data'), 'this payload is not ours')
+		os.rmdir_all(store.item_dir(entry.id)) or { panic(err) }
+		os.symlink(outside, store.item_dir(entry.id)) or { panic(err) }
+
+		filled := store.fill_size(entry)
+		assert !filled.size_known
+		assert filled.size == 0
+
+		batch := store.fill_sizes([entry])
+		assert batch.len == 1
+		assert !batch[0].size_known
+		assert batch[0].size == 0
+
+		stored := store.entry(entry.id)!
+		assert !stored.size_known
+		assert stored.size == 0
+	}
+}
+
+// regression: a zero-length index is refused instead of being silently
+// re-initialized, which would orphan every payload without an original path.
+fn test_open_rejects_zero_length_index() {
+	root := core_dir('zero_index')
+	defer {
+		core_cleanup(root)
+	}
+	store_root := os.join_path(root, 'trash')
+	store := open(store_root) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'hello')
+	entry := core_put(store, file, false)
+	store.close()
+
+	os.write_file(os.join_path(store_root, 'index.db'), '') or { panic(err) }
+
+	mut failed := false
+	open(store_root) or {
+		failed = true
+		if err is TrashError {
+			assert err.kind == .invalid_target
+			assert err.msg().contains('empty')
+		} else {
+			assert false, 'expected a TrashError, got ${err}'
+		}
+	}
+	assert failed, 'opening a zero-length index must fail'
+	// The payload is untouched, so `doctor --rebuild` can recreate the row once
+	// the empty index is moved away.
+	assert os.exists(os.join_path(store_root, 'items', entry.id, 'data'))
+
+	os.rm(os.join_path(store_root, 'index.db')) or { panic(err) }
+	reopened := open(store_root) or { panic(err) }
+	defer {
+		reopened.close()
+	}
+	assert reopened.scan().entries.len == 0
+	assert reopened.scan().broken.len == 1
+}
+
+// An empty index with no payloads is not damaged: it is the state a concurrent
+// open can observe between SQLite creating the file and writing its header.
+fn test_open_initializes_zero_length_index_without_payloads() {
+	root := core_dir('zero_index_empty')
+	defer {
+		core_cleanup(root)
+	}
+	store_root := os.join_path(root, 'trash')
+	store := open(store_root) or { panic(err) }
+	store.close()
+
+	os.write_file(os.join_path(store_root, 'index.db'), '') or { panic(err) }
+
+	reopened := open(store_root) or { panic(err) }
+	defer {
+		reopened.close()
+	}
+	assert reopened.count_items() == 0
+	assert reopened.index_pragma('PRAGMA user_version')! == '${latest_schema_version}'
+}
+
 // regression: doctor reports an unsafe id but never purges it.
 fn test_doctor_does_not_purge_invalid_id() {
 	root := core_dir('doctor_invalid_id')

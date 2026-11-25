@@ -16,7 +16,8 @@ _trash() {
 
     _arguments -C \
         '--store[use PATH as the trash store]:path:_files -/' \
-        '--verbose[explain what is happening]' \
+        '--verbose[explain what is happening and show every warning]' \
+        '--quiet[suppress warnings]' \
         '--no-color[disable colours]' \
         '--reset-store[wipe the store if the index schema is incompatible]' \
         '(-h --help)'{-h,--help}'[show help]' \

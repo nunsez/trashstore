@@ -111,6 +111,39 @@ pub fn fd_is_regular(fd int) bool {
 	return u32(st.st_mode) & s_ifmt == s_ifreg
 }
 
+// measure_child measures a payload below d. A regular file contributes its
+// size, a directory contributes the sum of the regular files below it, and
+// anything else (a symlink, a device node, a socket) contributes nothing. The
+// child is stat'ed relative to the descriptor with AT_SYMLINK_NOFOLLOW, so a
+// payload swapped for a symlink is never followed and cannot report a size that
+// belongs to someone else. `path` is only used for messages and for listing a
+// directory tree.
+pub fn (d Dir) measure_child(name string, path string) !u64 {
+	if !valid_child_name(name) {
+		return errs.io_error('invalid child name `${name}`')
+	}
+	mut st := C.stat{}
+	if C.fstatat(d.fd, &char(name.str), &st, C.AT_SYMLINK_NOFOLLOW) != 0 {
+		e := C.errno
+		return error_with_code('cannot stat `${path}`: ${os.get_error_msg(e)}', e)
+	}
+	match u32(st.st_mode) & s_ifmt {
+		s_ifreg {
+			return u64(st.st_size)
+		}
+		s_ifdir {
+			child := d.open_child(name)!
+			defer {
+				child.close()
+			}
+			return child.measure_tree(path)
+		}
+		else {
+			return 0
+		}
+	}
+}
+
 // measure_tree sums the apparent size of the regular files below d without
 // following symlinks. `path` is only used to enumerate a directory; every stat
 // and open is relative to the descriptor, so a child swapped for a symlink

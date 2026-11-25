@@ -222,7 +222,7 @@ fn test_parse_relations_from_table() {
 		if spec.requires.len == 0 && spec.forbids.len == 0 {
 			continue
 		}
-		command := spec.commands[0]
+		command := if spec.commands.len > 0 { spec.commands[0] } else { Command.put }
 		mut args := ['trash', command.label()]
 		args << flag_args(spec)
 		if command == .put {

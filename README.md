@@ -120,6 +120,11 @@ printed.
 `stats` prints the store location, item count, total known size, and the oldest
 and newest deletion times.
 
+Warnings (broken items, skipped stores, unresolved refs) go to stderr and never
+change the exit status; errors still do. At most 20 warnings are printed per
+run, followed by a single line counting the rest. `--verbose` shows every
+warning, `--quiet` silences them all, and the two flags cannot be combined.
+
 `list` shows the trailing hex characters of each item id, starting at eight and
 growing for very large stores so two displayed ids stay distinguishable.
 `restore` and `empty` accept that short id, any unique prefix of it, a unique
@@ -248,6 +253,11 @@ The store is private by design:
   and names both the original path and the resolved parent in the error.
 - Batch APIs validate ids from library callers: `restore_batch` and
   `empty_batch` reject `''`, `.`, `..`, `a/b`, `a\b` and ids containing NUL.
+  That validation covers ids passed *into* the store, not ids read *out* of it:
+  `scan()` and crash recovery read whatever is in `index.db`, so a corrupt row
+  or a foreign directory name is reported as a broken item instead of failing
+  the whole command. Broken items are never restored or measured through; only
+  `doctor --doctor-purge` and `empty --include-broken` remove them.
 - `index.db` and `index.backup.db` contain original paths, sizes and ids. They
   are protected by the private store directory (`0700`), not encrypted; treat
   them as sensitive metadata. WAL/SHM files can contain recently deleted rows
@@ -256,6 +266,12 @@ The store is private by design:
   open the store. An interactive run asks whether to wipe the store;
   `--reset-store` answers yes without a prompt. Wiping permanently deletes
   every trashed item.
+- A zero-length `index.db` next to existing payloads is treated as a truncated
+  index, not as a fresh store: opening it fails instead of silently recreating
+  the schema and turning every payload into an orphan without an original path.
+  Move the file away to start a fresh store, then run `trash doctor --rebuild`
+  to recreate rows from the payloads. A zero-length index in a store that never
+  held an item is initialized normally.
 
 Threat model: this protects a user's files from other local users and from
 mistakes, not from the owner or root. Trashing is not secure erasure: payload
@@ -329,8 +345,9 @@ database and are not disposable caches.
   `trash` treats `EINVAL`/`ENOTSUP` from `fsync` as "not supported" instead of a
   hard failure, so commands keep working, but metadata durability then depends
   on the server's write-back policy.
-- Cross-filesystem moves preserve data and permissions, but not hardlinks,
-  ACLs, xattrs, or timestamps.
+- Cross-filesystem moves preserve data and the permission bits (`mode & 0o777`),
+  but not hardlinks, ACLs, xattrs, timestamps, or the setuid/setgid/sticky
+  bits, which are masked off when the payload is recreated at the destination.
 - Cross-device put can leave the source in place if source removal fails after a
   successful copy; the item is still safely trashed.
 - `rename_noreplace` requires filesystem support. Without

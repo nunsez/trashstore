@@ -26,12 +26,16 @@ mut:
 	home_dev u64
 	roots    []string
 	stores   map[string]&trash.Store
+	// diag collects warnings for the whole invocation, including those emitted
+	// while opening stores, and flushes them once the command finishes.
+	diag Diagnostics
 }
 
 fn new_store_set(cli Cli, spec StoreSpec) !StoreSet {
 	mut set := StoreSet{
 		spec:   spec
 		stores: map[string]&trash.Store{}
+		diag:   new_diagnostics(cli)
 	}
 	set.open_one(spec.root, cli, false)!
 	set.home_dev = os.stat(spec.root)!.dev
@@ -44,7 +48,7 @@ fn (mut set StoreSet) open_one(root string, cli Cli, best_effort bool) ! {
 	}
 	mut store := open_store_or_reset(root, cli) or {
 		if best_effort {
-			eprintln(cli.palette().red('warning:') + ' skipping store ${root}: ${err.msg()}')
+			set.diag.warn('skipping store ${root}: ${err.msg()}')
 			return
 		}
 		return err
@@ -52,13 +56,13 @@ fn (mut set StoreSet) open_one(root string, cli Cli, best_effort bool) ! {
 	recovery := store.recover_if_needed() or {
 		store.close()
 		if best_effort {
-			eprintln(cli.palette().red('warning:') + ' skipping store ${root}: ${err.msg()}')
+			set.diag.warn('skipping store ${root}: ${err.msg()}')
 			return
 		}
 		return err
 	}
 	for warning in recovery.warnings {
-		eprintln(cli.palette().red('warning:') + ' ${root}: ${warning}')
+		set.diag.warn('${root}: ${warning}')
 	}
 	if recovery.recovered > 0 && cli.verbose {
 		eprintln('Recovered ${recovery.recovered} interrupted trash operation(s) in ${root}.')
@@ -95,14 +99,14 @@ fn (mut set StoreSet) target_store(target string, cli Cli) !TargetStore {
 	if chosen.root in set.stores {
 		return chosen
 	}
-	eprintln(cli.palette().red('warning:') + ' using ${set.spec.root} for ${target}')
+	set.diag.warn('using ${set.spec.root} for ${target}')
 	return TargetStore{
 		root: set.spec.root
 		dev:  set.home_dev
 	}
 }
 
-fn (set &StoreSet) register_target(chosen TargetStore, cli Cli) {
+fn (set &StoreSet) register_target(chosen TargetStore) {
 	if set.spec.explicit || chosen.root == set.spec.root || chosen.mount == '' {
 		return
 	}
@@ -111,11 +115,11 @@ fn (set &StoreSet) register_target(chosen TargetStore, cli Cli) {
 		mount: chosen.mount
 		root:  chosen.root
 	}) or {
-		eprintln(cli.palette().red('warning:') + ' cannot register volume ${chosen.mount}: ${err.msg()}')
+		set.diag.warn('cannot register volume ${chosen.mount}: ${err.msg()}')
 	}
 }
 
-fn (mut set StoreSet) scan_all(cli Cli) ScanAll {
+fn (mut set StoreSet) scan_all() ScanAll {
 	mut result := ScanAll{
 		roots: map[string]string{}
 	}
@@ -130,7 +134,7 @@ fn (mut set StoreSet) scan_all(cli Cli) ScanAll {
 		}
 		for entry in scan.entries {
 			if entry.id in result.roots {
-				eprintln(cli.palette().red('warning:') + ' duplicate item id ${entry.id} in ${root}; skipping')
+				set.diag.warn('duplicate item id ${entry.id} in ${root}; skipping')
 				continue
 			}
 			result.roots[entry.id] = root
@@ -185,10 +189,34 @@ fn group_entries(entries []trash.Entry, roots map[string]string) ([]string, map[
 	return order, groups
 }
 
-fn warn_scoped_broken(broken []ScopedBroken, cli Cli, multi bool) {
-	p := cli.palette()
+// broken_id_label renders the id of a broken item for diagnostics. A store-wide
+// problem has no id, and an unsafe id is quoted verbatim instead of being
+// truncated into something that looks like a real item id.
+fn broken_id_label(id string) string {
+	if id == '' {
+		return 'store'
+	}
+	if !trash.is_safe_id(id) {
+		return '`${id}` (invalid id)'
+	}
+	return format.short_id(id)
+}
+
+// broken_subject names the thing a broken item describes, so a store-wide
+// problem reads as "broken trash store" instead of a nameless item.
+fn broken_subject(id string) string {
+	if id == '' {
+		return 'broken trash store'
+	}
+	return 'broken trash item ${broken_id_label(id)}'
+}
+
+// warn_broken reports every broken item found by scan_all. The store name is
+// included only when more than one store was scanned.
+fn (mut set StoreSet) warn_broken(broken []ScopedBroken) {
+	multi := set.roots.len > 1
 	for scoped in broken {
 		prefix := if multi { '${scoped.root}: ' } else { '' }
-		eprintln(p.red('warning:') + ' ${sanitize_display(prefix)}broken trash item ${sanitize_display(format.short_id(scoped.item.id))}: ${sanitize_display(scoped.item.reason)}')
+		set.diag.warn('${sanitize_display(prefix)}${sanitize_display(broken_subject(scoped.item.id))}: ${sanitize_display(scoped.item.reason)}')
 	}
 }

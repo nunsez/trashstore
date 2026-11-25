@@ -175,6 +175,23 @@ fn (s Store) open_index() !sqlite.Db {
 	if os.exists(path) && !os.is_file(path) {
 		return invalid_target_error('index path `${path}` is not a regular file')
 	}
+	if os.exists(path) && os.stat(path)!.size == 0 {
+		// A zero-length index next to existing payloads is a damaged store:
+		// SQLite would happily initialize the file, and every payload would
+		// become an orphan with no original path left anywhere. Fail closed and
+		// let the user decide how to recover.
+		//
+		// An empty index next to an empty items/ directory is not damaged: a
+		// concurrent open can observe the file SQLite just created but has not
+		// written its header to yet, and a store that never held an item has
+		// nothing to lose, so that case is initialized as a fresh store.
+		items := os.ls(s.items_dir()) or {
+			return invalid_target_error('cannot list `${s.items_dir()}` while checking the index: ${err.msg()}')
+		}
+		if items.len > 0 {
+			return invalid_target_error('index `${path}` is empty but the store still has ${items.len} item(s); it was truncated or never initialized. Move it away to start a fresh store, then run `trash doctor --rebuild` to recreate rows from the payloads')
+		}
+	}
 	// SQLite opens the WAL/SHM/journal sidecars itself, so SQLITE_OPEN_NOFOLLOW
 	// on the main file does not protect them. Reject symlinked sidecars before
 	// SQLite can follow one.

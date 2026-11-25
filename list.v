@@ -19,6 +19,10 @@ pub:
 	limit int = -1
 }
 
+// BrokenItem is a payload or index row that cannot be used. An empty id marks a
+// store-wide problem (an unreadable index, a symlinked items directory) rather
+// than one item; a non-empty id may itself be invalid when it came from a
+// corrupt row or an unexpected directory name.
 pub struct BrokenItem {
 pub:
 	id     string
@@ -56,7 +60,7 @@ pub fn (s Store) scan() ScanResult {
 		return ScanResult{
 			broken: [
 				BrokenItem{
-					id:     '.'
+					id:     ''
 					reason: 'items directory is a symlink'
 				},
 			]
@@ -66,7 +70,7 @@ pub fn (s Store) scan() ScanResult {
 		return ScanResult{
 			broken: [
 				BrokenItem{
-					id:     '.'
+					id:     ''
 					reason: 'cannot read index: ${err.msg()}'
 				},
 			]

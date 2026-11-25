@@ -50,6 +50,7 @@ pub mut:
 	help_command       ?Command
 	store              string
 	verbose            bool
+	quiet              bool
 	no_color           bool
 	reset_store        bool
 	json               bool
@@ -231,6 +232,7 @@ fn (mut cli Cli) apply(spec FlagSpec, value string) ! {
 			cli.store = value
 		}
 		.verbose { cli.verbose = true }
+		.quiet { cli.quiet = true }
 		.no_color { cli.no_color = true }
 		.reset_store { cli.reset_store = true }
 		.recursive { cli.recursive = true }
