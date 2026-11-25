@@ -298,7 +298,9 @@ bytes may remain on disk until overwritten.
 Every mutation is a short transaction on `index.db` plus a rename of the
 payload. Before touching a payload, `trash` commits a `pending`/`restoring`/
 `pending_empty` row; after the rename it commits the final state (or deletes the
-row). `recover_if_needed()` looks at the payload to decide whether to finish or
+row). Moved payload directories are synced before the rows that describe them
+are deleted, so a crash cannot leave a payload that reappears in `items/` with
+no row. `recover_if_needed()` looks at the payload to decide whether to finish or
 roll back an interrupted operation. If another process already holds the
 exclusive recovery lock, the call returns an empty report and the lock holder
 (or the next run) finishes the work. Broken items are reported by

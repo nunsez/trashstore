@@ -28,8 +28,8 @@ pub fn (s Store) empty_entries(entries []Entry) !int {
 // `empty --all` runs are idempotent.
 //
 // Items are processed in chunks: each chunk is journaled as `pending_empty` in
-// one transaction, moved, and deleted from the index in one transaction. A
-// crash between the phases makes recovery finish the empty the user asked for,
+// one transaction, moved, synced, and deleted from the index in one transaction.
+// A crash between the phases makes recovery finish the empty the user asked for,
 // while the happy path pays a few commits per chunk instead of one per item.
 pub fn (s Store) empty_batch(entries []Entry) !EmptyBatch {
 	mut fl := s.lock_exclusive()!
@@ -47,8 +47,6 @@ pub fn (s Store) empty_batch(entries []Entry) !EmptyBatch {
 			return classify_error(err, 'empty', 'batch')
 		}
 	}
-	s.sync_dir(s.items_dir()) or { return classify_error(err, 'empty', s.items_dir()) }
-	s.sync_dir(s.gc_dir()) or { return classify_error(err, 'empty', s.gc_dir()) }
 	return batch
 }
 
@@ -100,6 +98,10 @@ fn (s Store) empty_chunk_locked(entries []Entry, mut batch EmptyBatch) ! {
 		s.set_items_state(rollback_ids, .trashed)!
 	}
 	if emptied_ids.len > 0 {
+		// Persist the moves before their rows disappear: a crash must not
+		// resurrect a payload whose row is already gone.
+		s.sync_dir(s.items_dir())!
+		s.sync_dir(s.gc_dir())!
 		s.delete_items(emptied_ids)!
 	}
 }

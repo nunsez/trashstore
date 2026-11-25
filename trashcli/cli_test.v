@@ -66,6 +66,29 @@ fn stdin_from_file(path string) int {
 	return -1
 }
 
+fn stdout_to_file(path string) int {
+	$if !windows {
+		old := C.dup(1)
+		fd := C.open(&char(path.str), C.O_WRONLY | C.O_CREAT | C.O_TRUNC, 0o600)
+		if fd >= 0 {
+			C.dup2(fd, 1)
+			C.close(fd)
+		}
+		return old
+	}
+	return -1
+}
+
+fn stdout_restore(old int) {
+	$if !windows {
+		flush_stdout()
+		if old >= 0 {
+			C.dup2(old, 1)
+			C.close(old)
+		}
+	}
+}
+
 fn cli_parse(args []string) Cli {
 	return Cli.parse(args) or { panic(err) }
 }
@@ -1432,4 +1455,32 @@ fn test_preview_does_not_open_special_files() {
 	}
 	// Must return instead of blocking in open(2) on the FIFO.
 	assert preview_file_lines(fifo) == []string{}
+}
+
+fn test_run_empty_include_broken_reports_permanent_deletion() {
+	root := cli_dir('empty_broken_message')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'x')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	store := trash.open(store_path) or { panic(err) }
+	orphan := '00000000-0000-7000-8000-000000000001'
+	os.mkdir_all(store.item_dir(orphan)) or { panic(err) }
+	cli_write(store.data_path(orphan), 'orphan')
+
+	out_file := os.join_path(root, 'stdout.txt')
+	old := stdout_to_file(out_file)
+	cli_run(['trash', '--store', store_path, 'empty', '--all', '--include-broken', '--yes']) or {
+		panic(err)
+	}
+	stdout_restore(old)
+	out := os.read_file(out_file) or { '' }
+	// doctor --purge already collected .gc, so the payloads are gone for good.
+	assert out.contains('Permanently deleted 1 item(s).')
+	assert !out.contains('use --wait')
+	assert !os.exists(store.item_dir(orphan))
+	assert (os.ls(os.join_path(store_path, '.gc')) or { []string{} }).len == 0
 }

@@ -82,7 +82,6 @@ pub fn (s Store) restore_batch(entries []Entry) !RestoreBatch {
 			return classify_error(err, 'restore', 'batch')
 		}
 	}
-	s.sync_dir(s.items_dir()) or { return classify_error(err, 'restore', s.items_dir()) }
 	return batch
 }
 
@@ -127,10 +126,15 @@ fn (s Store) restore_chunk_locked(entries []Entry, mut batch RestoreBatch) ! {
 		restored_ids << p.entry.id
 		restored_parents << p.parent
 	}
-	// Persist the restored payloads before their index rows disappear: syncing
-	// each distinct target directory once replaces two fsyncs per item.
+	// Persist the restored payloads and the removed item directories before
+	// their index rows disappear: syncing each distinct target directory once
+	// replaces two fsyncs per item, and syncing items/ closes the window where a
+	// crash resurrects an item directory whose row is already gone.
 	for parent in unique_dirs(restored_parents) {
 		s.sync_dir(parent)!
+	}
+	if restored_ids.len > 0 {
+		s.sync_dir(s.items_dir())!
 	}
 	s.clear_restore_states(rollback_ids)!
 	if restored_ids.len > 0 {

@@ -134,6 +134,46 @@ fn run() ! {
 		return error('crash journal recovery left items behind: ${list_out}')
 	}
 
+	// A cross-device copy that fails midway must not leave a partial temporary
+	// tree (or its owner marker) next to the target.
+	fifo_store := os.join_path(work, 'store-fifo')
+	fifo_src := os.join_path(cross_root, 'fifo-dir')
+	os.mkdir(fifo_src)!
+	os.write_file(os.join_path(fifo_src, 'child.txt'), 'fifo payload\n')!
+	fifo_put_code, _, fifo_put_err := run_trash(bin, fifo_store, ['-r', fifo_src], map[string]string{})
+	if fifo_put_code != 0 {
+		return error('fifo directory put failed (${fifo_put_code}): ${fifo_put_err}')
+	}
+	items := os.ls(os.join_path(fifo_store, 'items')) or { []string{} }
+	if items.len != 1 {
+		return error('expected one stored item, found ${items.len}')
+	}
+	payload_data := os.join_path(fifo_store, 'items', items[0], 'data')
+	fifo_path := os.join_path(payload_data, 'pipe')
+	if os.system_args(['mkfifo', fifo_path]) != 0 {
+		return error('cannot create fifo in the stored payload')
+	}
+	fail_restore_code, _, _ := run_trash(bin, fifo_store, ['restore', fifo_src], map[string]string{})
+	if fail_restore_code == 0 {
+		return error('cross-device restore of a special file did not fail')
+	}
+	for name in os.ls(cross_root) or { []string{} } {
+		if name.contains('trash-tmp') {
+			return error('failed cross-device restore left `${name}` behind')
+		}
+	}
+	if !os.is_dir(payload_data) {
+		return error('failed cross-device restore removed the stored payload')
+	}
+	list_code2, list_out2, _ := run_trash(bin, fifo_store, ['list', '--all', '--json'],
+		map[string]string{})
+	if list_code2 != 0 {
+		return error('list after failed cross-device restore failed (${list_code2})')
+	}
+	if list_out2.trim_space() == '[]' {
+		return error('failed cross-device restore lost the item')
+	}
+
 	run_per_volume(bin, work, cross_root)!
 	println('cross-device test passed')
 }
