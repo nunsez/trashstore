@@ -105,13 +105,18 @@ fn (s Store) empty_chunk_locked(entries []Entry, mut batch EmptyBatch) ! {
 }
 
 // empty_one_locked moves one already journaled item into .gc. The caller owns
-// the pending_empty state and rolls it back if this fails.
+// the pending_empty state and rolls it back if this fails. The move is relative
+// to the items/ and .gc/ descriptors, exactly like recover_empty(), so a
+// directory component swapped for a symlink cannot redirect the rename.
 fn (s Store) empty_one_locked(entry Entry) ! {
 	if !is_safe_id(entry.id) {
 		return invalid_target_error('invalid item id `${entry.id}`')
 	}
 	if os.is_link(s.gc_dir()) {
 		return invalid_target_error('garbage directory must not be a symlink')
+	}
+	if os.is_link(s.items_dir()) {
+		return invalid_target_error('items directory must not be a symlink')
 	}
 	if os.is_link(s.item_dir(entry.id)) {
 		return invalid_target_error('item directory `${s.item_dir(entry.id)}` must not be a symlink')
@@ -120,8 +125,22 @@ fn (s Store) empty_one_locked(entry Entry) ! {
 	if !is_safe_id(new_id) {
 		return invalid_target_error('id generator returned an unsafe id `${new_id}`')
 	}
-	dest := os.join_path(s.gc_dir(), '${entry.id}-${new_id}')
-	fsx.rename_noreplace(s.item_dir(entry.id), dest)!
+	mut items := fsx.open_dir(s.items_dir())!
+	defer {
+		items.close()
+	}
+	mut gc := fsx.open_dir(s.gc_dir())!
+	defer {
+		gc.close()
+	}
+	dest_name := '${entry.id}-${new_id}'
+	fsx.renameat_noreplace(items.fd, entry.id, gc.fd, dest_name) or {
+		if err.code() == fsx.enoent {
+			// The payload is already gone; the item is empty, not a failure.
+			return
+		}
+		return err
+	}
 	failpoint('empty:after-rename')!
 }
 

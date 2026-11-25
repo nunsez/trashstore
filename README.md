@@ -239,12 +239,12 @@ The store is private by design:
   is checked to be a regular file after `open(O_NOFOLLOW)`, so a directory or a
   device node cannot silently stand in for it.
 - Store maintenance is descriptor-relative too: recovery, garbage collection,
-  item-directory removal, cross-device copies and size measurement open the
-  parent directory with `openat(O_DIRECTORY|O_NOFOLLOW)` and never follow a
-  symlink swapped in after validation. Residual risk: listing a directory still
-  uses its path, so a swapped path can make an operation miss entries (it
-  reports an unknown size or leaves the item for `doctor`) but cannot read or
-  delete outside the opened descriptor.
+  emptying, item-directory removal, cross-device copies and size measurement
+  open the parent directory with `openat(O_DIRECTORY|O_NOFOLLOW)` and never
+  follow a symlink swapped in after validation. Residual risk: listing a
+  directory still uses its path, so a swapped path can make an operation miss
+  entries (it reports an unknown size or leaves the item for `doctor`) but
+  cannot read or delete outside the opened descriptor.
 - `put` and `restore` walk the parent directory one component at a time with
   `openat(O_DIRECTORY|O_NOFOLLOW)` and perform the final move with `renameat`
   relative to those descriptors, so a component swapped for a symlink between
@@ -253,11 +253,21 @@ The store is private by design:
   and names both the original path and the resolved parent in the error.
 - Batch APIs validate ids from library callers: `restore_batch` and
   `empty_batch` reject `''`, `.`, `..`, `a/b`, `a\b` and ids containing NUL.
-  That validation covers ids passed *into* the store, not ids read *out* of it:
+  A target that names no item (an empty argument, or a reference containing
+  NUL) is rejected instead of falling back to "the newest item" or, with `-r`,
+  to the whole store. That validation covers ids passed *into* the store, not
+  ids read *out* of it:
   `scan()` and crash recovery read whatever is in `index.db`, so a corrupt row
   or a foreign directory name is reported as a broken item instead of failing
   the whole command. Broken items are never restored or measured through; only
   `doctor --doctor-purge` and `empty --include-broken` remove them.
+- Everything printed for humans is sanitized: warnings, error messages, the
+  interactive selection prompt, `doctor` output and `--preview` escape C0, DEL
+  and C1 control characters (`\xNN`), so a crafted index row, `.gc` entry name
+  or file content cannot inject terminal escape sequences. C1 is escaped as the
+  UTF-8 sequence `C2 80..9F` only, which leaves ordinary non-ASCII text intact.
+  `--json` and `where` do not apply this escaping: JSON is encoded by the
+  serializer, and `where` prints raw paths for scripts.
 - `index.db` and `index.backup.db` contain original paths, sizes and ids. They
   are protected by the private store directory (`0700`), not encrypted; treat
   them as sensitive metadata. WAL/SHM files can contain recently deleted rows
@@ -294,7 +304,9 @@ work `doctor --doctor-purge` does).
 `put` and `restore` take a shared store lock; `empty` takes the exclusive lock,
 so a wipe waits for in-flight operations instead of racing them, and concurrent
 `empty --all` runs are idempotent. GC continues past an item it cannot remove and reports the remainder, so
-one unreadable entry does not block the rest.
+one unreadable entry does not block the rest. `--wait` is honoured together with
+`--include-broken`: emptied payloads are collected even when no broken item
+needed purging.
 
 ## Design notes
 

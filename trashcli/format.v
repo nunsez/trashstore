@@ -45,12 +45,26 @@ fn (p Palette) green(s string) string {
 	return s
 }
 
-// sanitize_display escapes C0 control bytes and DEL as \xNN. Paths and ids come
-// from the store and may contain terminal escape sequences; JSON and `where`
-// keep the raw value for scripts, but human-readable output must not.
+// sanitize_display escapes C0 control bytes, DEL and C1 control characters as
+// \xNN. Paths and ids come from the store and may contain terminal escape
+// sequences; JSON and `where` keep the raw value for scripts, but human-readable
+// output must not. C1 is escaped as the UTF-8 sequence C2 80..9F only, so
+// ordinary non-ASCII text (including the continuation bytes of any multibyte
+// character) is left intact.
 fn sanitize_display(value string) string {
 	mut out := []u8{cap: value.len}
-	for c in value.bytes() {
+	mut i := 0
+	for i < value.len {
+		c := value[i]
+		if c == 0xc2 && i + 1 < value.len && value[i + 1] >= 0x80 && value[i + 1] <= 0x9f {
+			// U+0080..U+009F, including the CSI introducer U+009B.
+			out << `\\`
+			out << `x`
+			out << hex_digit(value[i + 1] >> 4)
+			out << hex_digit(value[i + 1] & 0x0f)
+			i += 2
+			continue
+		}
 		if c < 0x20 || c == 0x7f {
 			out << `\\`
 			out << `x`
@@ -59,8 +73,20 @@ fn sanitize_display(value string) string {
 		} else {
 			out << c
 		}
+		i++
 	}
 	return out.bytestr()
+}
+
+// sanitize_message escapes control characters in a multi-line message while
+// keeping the line breaks that separate hints and examples. It is the boundary
+// used for error messages and warnings before they reach the terminal.
+pub fn sanitize_message(value string) string {
+	mut lines := []string{cap: 4}
+	for line in value.split_into_lines() {
+		lines << sanitize_display(line)
+	}
+	return lines.join('\n')
 }
 
 fn hex_digit(value u8) u8 {
@@ -150,8 +176,8 @@ fn max_width(current int, value string) int {
 
 // table_lines renders the header and one line per row. Every cell is padded to
 // the column width, so the header and all rows share the same column offsets.
-fn table_lines(entries []trash.Entry, cwd string, long bool, p Palette) []string {
-	id_len := format.short_id_length(entries.len)
+// id_len is the adaptive short-id width for the whole store, not for this page.
+fn table_lines(entries []trash.Entry, cwd string, long bool, p Palette, id_len int) []string {
 	mut rows := []TableRow{cap: entries.len}
 	for entry in entries {
 		rows << TableRow{
@@ -200,7 +226,7 @@ fn table_lines(entries []trash.Entry, cwd string, long bool, p Palette) []string
 	return lines
 }
 
-fn print_table(entries []trash.Entry, cwd string, long bool, p Palette) {
+fn print_table(entries []trash.Entry, cwd string, long bool, p Palette, id_len int) {
 	mut total := u64(0)
 	mut unknown := 0
 	for entry in entries {
@@ -210,7 +236,7 @@ fn print_table(entries []trash.Entry, cwd string, long bool, p Palette) {
 			unknown++
 		}
 	}
-	for line in table_lines(entries, cwd, long, p) {
+	for line in table_lines(entries, cwd, long, p, id_len) {
 		println(line)
 	}
 	println(p.dim('${entries.len} item(s), ${format.format_size(total)}${unknown_suffix(unknown)}'))

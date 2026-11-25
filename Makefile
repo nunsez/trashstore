@@ -7,6 +7,7 @@ fmt:
 
 vet:
 	v vet .
+	v vet ./trashcli ./internal/sqlite ./internal/fsx ./internal/pathx ./internal/errs ./internal/format
 	v vet scripts/
 
 test:

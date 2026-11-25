@@ -295,11 +295,6 @@ fn (s Store) delete_items(ids []string) ! {
 	})!
 }
 
-fn (s Store) delete_all_items() ! {
-	db := s.conn()!
-	db.exec('DELETE FROM items')!
-}
-
 // get_item returns one row; a missing id is not_found. An unsafe id is
 // rejected before it reaches SQL or any path-building code.
 fn (s Store) get_item(id string) !IndexItem {

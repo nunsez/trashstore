@@ -94,13 +94,22 @@ mut:
 // matched entries keep their store order (newest first) and duplicates across
 // targets are dropped. When tolerant is false an unresolvable target aborts
 // with the regular not-found/ambiguous error; when it is true the ref is
-// reported as a warning, skipped, and counted in failed.
+// reported as a warning, skipped, and counted in failed. An empty reference is
+// never resolved: it names no item and must not widen the selection.
 fn resolve_refs(entries []trash.Entry, refs []string, recursive bool, tolerant bool) !RefResolution {
 	mut selected := []trash.Entry{}
 	mut seen := map[string]bool{}
 	mut warnings := []string{}
 	mut failed := 0
 	for ref in refs {
+		if ref == '' {
+			if !tolerant {
+				return error('an empty reference does not name a trashed item')
+			}
+			warnings << 'empty reference (skipped)'
+			failed++
+			continue
+		}
 		candidate := pathx.canonical_target_path(ref)
 		mut failure := ''
 		mut matched := trash.find_in(entries, ref) or {
@@ -207,14 +216,16 @@ fn parse_selection_input(answer string, count int) ![]int {
 }
 
 // prompt_selection prints the candidate list and asks for a multi-selection.
-fn prompt_selection(entries []trash.Entry) ![]trash.Entry {
+// total_items is the size of the whole store, not of the page, so the adaptive
+// short-id width stays wide enough to keep ids unambiguous.
+fn prompt_selection(entries []trash.Entry, total_items int) ![]trash.Entry {
 	if os.is_atty(0) == 0 {
 		return error('-i/--interactive requires a terminal')
 	}
 	if entries.len == 0 {
 		return []trash.Entry{}
 	}
-	id_len := format.short_id_length(entries.len)
+	id_len := format.short_id_length(total_items)
 	for i, entry in entries {
 		println('${i + 1:3}) ${sanitize_display(format.short_id_len(entry.id, id_len))}  ${format.format_age(entry.trashed_at)}  ${sanitize_display(entry.original_path)}')
 	}
@@ -223,7 +234,7 @@ fn prompt_selection(entries []trash.Entry) ![]trash.Entry {
 	for !done {
 		answer := os.input('Select items (1,3-5), a=all, q=quit: ')
 		indices := parse_selection_input(answer, entries.len) or {
-			eprintln('error: ${err.msg()}')
+			eprintln('error: ${sanitize_message(err.msg())}')
 			continue
 		}
 		done = true
@@ -234,7 +245,8 @@ fn prompt_selection(entries []trash.Entry) ![]trash.Entry {
 	return picked
 }
 
-// selection_scope describes the selected area for confirmation prompts.
+// selection_scope describes the selected area for confirmation prompts. The
+// cwd is sanitized because it becomes part of a terminal prompt.
 fn selection_scope(cli Cli, cwd string) string {
 	if cli.all {
 		return ' from the whole trash'
@@ -243,9 +255,9 @@ fn selection_scope(cli Cli, cwd string) string {
 		return ''
 	}
 	if cli.recursive {
-		return ' from ${cwd} and its subdirectories'
+		return ' from ${sanitize_display(cwd)} and its subdirectories'
 	}
-	return ' from ${cwd}'
+	return ' from ${sanitize_display(cwd)}'
 }
 
 // confirm_action asks for confirmation unless --yes is set. Single-item

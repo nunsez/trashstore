@@ -1,5 +1,6 @@
 module trashcli
 
+import internal.fsx
 import internal.pathx
 import os
 import strconv
@@ -167,6 +168,9 @@ fn read_volume_records(home_root string) []VolumeRecord {
 	return records
 }
 
+// write_volume_records replaces the registry atomically. The temporary file is
+// fsynced and the directory is synced after the rename, so a crash cannot leave
+// a truncated registry that silently loses every volume store.
 fn write_volume_records(home_root string, records []VolumeRecord) ! {
 	mut lines := []string{cap: records.len}
 	for record in records {
@@ -176,10 +180,28 @@ fn write_volume_records(home_root string, records []VolumeRecord) ! {
 	path := volumes_file(home_root)
 	tmp := '${path}.tmp-${os.getpid()}'
 	os.write_file(tmp, content)!
+	mut f := os.open(tmp)!
+	defer {
+		f.close()
+	}
+	fsx.fsync_fd(f.fd, tmp)!
 	os.rename(tmp, path)!
+	fsx.fsync_dir(home_root)!
+}
+
+// volumes_lock serializes the read-modify-write of the registry, so two
+// concurrent puts on different volumes do not lose each other's record.
+fn volumes_lock(home_root string) !fsx.FileLock {
+	mut l := fsx.open_lock('${volumes_file(home_root)}.lock')!
+	l.lock_exclusive()!
+	return l
 }
 
 fn register_volume(home_root string, record VolumeRecord) ! {
+	mut fl := volumes_lock(home_root)!
+	defer {
+		fl.release()
+	}
 	mut records := read_volume_records(home_root)
 	mut found := false
 	for i, existing in records {

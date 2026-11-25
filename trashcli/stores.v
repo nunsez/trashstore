@@ -65,7 +65,7 @@ fn (mut set StoreSet) open_one(root string, cli Cli, best_effort bool) ! {
 		set.diag.warn('${root}: ${warning}')
 	}
 	if recovery.recovered > 0 && cli.verbose {
-		eprintln('Recovered ${recovery.recovered} interrupted trash operation(s) in ${root}.')
+		eprintln('Recovered ${recovery.recovered} interrupted trash operation(s) in ${sanitize_display(root)}.')
 	}
 	set.stores[root] = store
 	set.roots << root
@@ -144,6 +144,13 @@ fn (mut set StoreSet) scan_all() ScanAll {
 	return result
 }
 
+// scan_total is the number of ids the scanned stores know about, including
+// broken ones. It is the width basis for adaptive short ids: a page-limited
+// listing must not shrink ids that are ambiguous across the whole store.
+fn scan_total(scan ScanAll) int {
+	return scan.entries.len + scan.broken.len
+}
+
 fn fill_sizes(set &StoreSet, roots map[string]string, entries []trash.Entry) []trash.Entry {
 	mut result := entries.clone()
 	// Group entries by their owning store so each store measures and persists
@@ -212,11 +219,12 @@ fn broken_subject(id string) string {
 }
 
 // warn_broken reports every broken item found by scan_all. The store name is
-// included only when more than one store was scanned.
+// included only when more than one store was scanned. Diagnostics sanitizes the
+// message before it reaches the terminal.
 fn (mut set StoreSet) warn_broken(broken []ScopedBroken) {
 	multi := set.roots.len > 1
 	for scoped in broken {
 		prefix := if multi { '${scoped.root}: ' } else { '' }
-		set.diag.warn('${sanitize_display(prefix)}${sanitize_display(broken_subject(scoped.item.id))}: ${sanitize_display(scoped.item.reason)}')
+		set.diag.warn('${prefix}${broken_subject(scoped.item.id)}: ${scoped.item.reason}')
 	}
 }

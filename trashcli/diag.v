@@ -31,7 +31,9 @@ fn new_diagnostics(cli Cli) Diagnostics {
 }
 
 // warn records one warning, or drops it when warnings are suppressed or the cap
-// has been reached.
+// has been reached. The message is sanitized here, at the single boundary where
+// store-controlled text reaches the terminal: a crafted index row or `.gc`
+// entry name must not be able to emit an escape sequence.
 fn (mut d Diagnostics) warn(message string) {
 	if d.quiet {
 		return
@@ -40,7 +42,7 @@ fn (mut d Diagnostics) warn(message string) {
 		d.hidden++
 		return
 	}
-	d.lines << message
+	d.lines << sanitize_display(message)
 }
 
 // flush writes the collected warnings to stderr, followed by one summary line

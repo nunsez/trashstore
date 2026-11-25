@@ -63,8 +63,20 @@ mut:
 
 // open_lock opens path with O_NOFOLLOW and rejects anything that is not a
 // regular file, so a directory or a device node cannot stand in for the lock.
+// It creates the file when it is missing.
 pub fn open_lock(path string) !FileLock {
 	fd := C.open(&char(path.str), C.O_RDWR | C.O_CREAT | C.O_CLOEXEC | C.O_NOFOLLOW, 0o600)
+	return lock_from_fd(fd, path)
+}
+
+// open_lock_existing is open_lock without O_CREAT. It is used by callers that
+// promised not to create any file in the store (open_with(create:false)).
+pub fn open_lock_existing(path string) !FileLock {
+	fd := C.open(&char(path.str), C.O_RDWR | C.O_CLOEXEC | C.O_NOFOLLOW, 0)
+	return lock_from_fd(fd, path)
+}
+
+fn lock_from_fd(fd int, path string) !FileLock {
 	if fd < 0 {
 		return errs.io_error('cannot open lock file `${path}`: ${os.get_error_msg(C.errno)}')
 	}

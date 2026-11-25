@@ -21,7 +21,9 @@ pub struct StoreOptions {
 pub:
 	// create allows open_with to initialize a missing store. With create:
 	// false the store directory, items/, .gc/ and index.db must already exist;
-	// nothing is created and a missing piece is a not_found error.
+	// a missing piece is a not_found error. The advisory lock file is only
+	// opened when it already exists, so create:false does not create it (SQLite
+	// may still create its own -wal/-shm sidecars while opening the database).
 	create              bool = true
 	mode                u32  = 0o700
 	allow_foreign_owner bool
@@ -151,11 +153,21 @@ pub fn open_with(root string, opts StoreOptions) !&Store {
 		return invalid_target_error('lock file `${s.lock_path()}` must not be a symlink')
 	}
 	lock_existed := os.exists(s.lock_path())
-	mut fl := s.lock_shared()!
+	// create:false must not create anything, including the lock file. An
+	// existing store is already initialized, and SQLite serializes its own
+	// writers, so the missing advisory lock only weakens serialization against
+	// reset_store, not the index itself. With create:true (or an existing lock)
+	// the shared lock is taken as usual.
+	mut fl := fsx.FileLock{}
+	if opts.create {
+		fl = s.lock_shared()!
+	} else if lock_existed {
+		fl = s.lock_shared_existing()!
+	}
 	defer {
 		fl.release()
 	}
-	mut created_any := !root_existed || !lock_existed
+	mut created_any := !root_existed
 	for dir in [os.join_path(resolved, items_dirname), os.join_path(resolved, gc_dirname)] {
 		if os.is_link(dir) {
 			return invalid_target_error('store directory `${dir}` must not be a symlink')
@@ -192,7 +204,9 @@ pub fn open_with(root string, opts StoreOptions) !&Store {
 	if !root_existed {
 		os.chmod(resolved, int(opts.mode)) or {}
 	}
-	os.chmod(s.lock_path(), 0o600) or {}
+	if os.exists(s.lock_path()) {
+		os.chmod(s.lock_path(), 0o600) or {}
+	}
 	if created_any {
 		fsx.fsync_dir(resolved)!
 		if !root_existed {
@@ -247,6 +261,14 @@ fn (s Store) lock_shared() !fsx.FileLock {
 	return l
 }
 
+// lock_shared_existing is lock_shared for a caller that must not create the
+// lock file (create:false). A missing lock is a not_found error.
+fn (s Store) lock_shared_existing() !fsx.FileLock {
+	mut l := fsx.open_lock_existing(s.lock_path())!
+	l.lock_shared()!
+	return l
+}
+
 fn (s Store) lock_exclusive() !fsx.FileLock {
 	mut l := fsx.open_lock(s.lock_path())!
 	l.lock_exclusive()!
@@ -288,11 +310,9 @@ fn unique_dirs(dirs []string) []string {
 	return result
 }
 
-// recover_if_needed runs recovery only when pending rows or garbage exist.
-// It returns an empty report if another process is already handling recovery.
-// recover_if_needed runs recovery when there is work to do. If another process
-// holds the exclusive lock, recovery is deferred: the report is empty and the
-// lock holder (or the next run) finishes it.
+// recover_if_needed runs recovery only when pending rows or garbage exist. If
+// another process holds the exclusive lock, recovery is deferred: the report is
+// empty and the lock holder (or the next run) finishes it.
 pub fn (s Store) recover_if_needed() !RecoveryReport {
 	pending := s.pending_items()!
 	garbage := os.ls(s.gc_dir()) or { []string{} }

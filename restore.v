@@ -168,19 +168,24 @@ fn (s Store) move_restore_data_cross(entry_id string, src fsx.Dir, dst fsx.Dir, 
 	marker_name := '${tmp_name}.owner'
 	tmp := os.join_path(parent, tmp_name)
 	marker := os.join_path(parent, marker_name)
+	// A temporary name that already exists belongs to someone else: never copy
+	// into it and never delete it. Report a collision so the caller retries
+	// with another suffix.
+	if dst.child_exists(tmp_name) {
+		return error_with_code('temporary path `${tmp}` already exists', fsx.eexist)
+	}
 	// Record that the temporary copy belongs to this item before creating it.
 	// Recovery only removes a temp path whose marker matches, so a crafted
 	// restore_to cannot make it delete an unrelated file.
 	dst.write_child_new(marker_name, entry_id)!
-	mut copied := false
 	defer {
-		if copied {
-			dst.remove_child_any(tmp_name, tmp) or {}
-		}
+		// The temporary name did not exist before this copy, so everything below
+		// it was created here and must be removed on every failure path: a
+		// half-copied tree must not be left behind in the user's directory.
+		dst.remove_child_any(tmp_name, tmp) or {}
 		dst.remove_child_any(marker_name, marker) or {}
 	}
 	src.copy_child_tree('data', s.data_path(entry_id), dst, tmp_name, tmp)!
-	copied = true
 	st := os.lstat(tmp)!
 	item.target_dev = st.dev
 	item.target_ino = st.inode
@@ -261,10 +266,10 @@ fn (s Store) execute_restore_locked(mut p PendingRestore) !RestoreResult {
 			}
 		}
 		fsx.renameat_noreplace(src.fd, 'data', dst.fd, candidate) or {
-			if err.code() == 18 {
+			if err.code() == fsx.exdev {
 				// EXDEV: the payload lives on another filesystem.
 				s.move_restore_data_cross(p.entry.id, src, dst, p.parent, candidate, mut item) or {
-					if err.code() == 17 {
+					if err.code() == fsx.eexist {
 						continue
 					}
 					return err
@@ -272,7 +277,7 @@ fn (s Store) execute_restore_locked(mut p PendingRestore) !RestoreResult {
 				moved = true
 				break
 			}
-			if err.code() == 17 {
+			if err.code() == fsx.eexist {
 				// EEXIST: the name was taken after we chose it; try the next suffix.
 				continue
 			}

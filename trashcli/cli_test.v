@@ -978,7 +978,7 @@ fn test_cli_select_matches_library_select_entries() {
 
 fn test_table_header_and_alignment() {
 	entries := table_test_entries()
-	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	lines := table_lines(entries, '/tmp/t', false, Palette{}, format.short_id_length(entries.len))
 	assert lines.len == entries.len + 1
 	assert lines[0] == 'ID        AGE         SIZE  PATH'
 	assert lines[1] == '8bd42d97  2h ago    12 KiB  report.txt'
@@ -1010,7 +1010,7 @@ fn test_table_wide_size_keeps_columns() {
 		size_known:    true
 		state:         .trashed
 	}
-	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	lines := table_lines(entries, '/tmp/t', false, Palette{}, format.short_id_length(entries.len))
 	assert lines[entries.len].contains('1024 GiB')
 	path_col := lines[0].index('PATH') or { -1 }
 	assert path_col > 0
@@ -1023,7 +1023,7 @@ fn test_table_wide_size_keeps_columns() {
 
 fn test_table_long_layout() {
 	entries := table_test_entries()
-	lines := table_lines(entries, '/tmp/t', true, Palette{})
+	lines := table_lines(entries, '/tmp/t', true, Palette{}, format.short_id_length(entries.len))
 	assert lines.len == entries.len + 1
 	assert lines[0].starts_with('ID')
 	assert lines[0].contains('DELETED')
@@ -1185,7 +1185,7 @@ fn test_table_shows_known_directory_size() {
 			state:         .trashed
 		},
 	]
-	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	lines := table_lines(entries, '/tmp/t', false, Palette{}, format.short_id_length(entries.len))
 	assert lines[1].contains('2 KiB')
 }
 
@@ -1295,7 +1295,7 @@ fn test_sanitize_display_escapes_control_bytes() {
 fn test_table_sanitizes_control_characters_in_paths() {
 	mut entries := table_test_entries()
 	entries[0].original_path = '/tmp/t/report\x1b[31m.txt'
-	lines := table_lines(entries, '/tmp/t', false, Palette{})
+	lines := table_lines(entries, '/tmp/t', false, Palette{}, format.short_id_length(entries.len))
 	assert !lines[1].contains('\x1b')
 	assert lines[1].contains('\\x1b')
 	// JSON stays raw for scripts.
@@ -1322,4 +1322,83 @@ fn test_doctor_purge_requires_confirmation() {
 	assert failed
 	assert store.scan().broken.len == 1
 	assert os.is_dir(store.item_dir(entry.id))
+}
+
+fn test_parse_rejects_empty_target() {
+	mut failed := false
+	Cli.parse(['trash', 'empty', '--yes', '']) or { failed = true }
+	assert failed
+	mut put_failed := false
+	Cli.parse(['trash', '']) or { put_failed = true }
+	assert put_failed
+}
+
+fn test_select_rejects_empty_target_even_with_recursive() {
+	entries := table_test_entries()
+	mut recursive_failed := false
+	select(entries, SelectionOptions{
+		targets:   ['']
+		recursive: true
+	}, identity_sizes) or { recursive_failed = true }
+	assert recursive_failed
+	mut plain_failed := false
+	select(entries, SelectionOptions{ targets: [''] }, identity_sizes) or { plain_failed = true }
+	assert plain_failed
+	res := resolve_refs(entries, ['', entries[0].id], false, true)!
+	assert res.entries.len == 1
+	assert res.failed == 1
+	assert res.warnings.len == 1
+}
+
+fn test_sanitize_display_escapes_c1_and_keeps_utf8() {
+	assert sanitize_display('a\x1b[31mRED') == 'a\\x1b[31mRED'
+	assert sanitize_display('a\x7f') == 'a\\x7f'
+	// U+009B (CSI) is C2 9B in UTF-8 and is escaped as the control it is.
+	assert sanitize_display('a\u009b31m') == 'a\\x9b31m'
+	// Regular multibyte text is untouched: continuation bytes are not C1.
+	assert sanitize_display('файл') == 'файл'
+	assert sanitize_message('a\x1b[31m\nhint: b') == 'a\\x1b[31m\nhint: b'
+}
+
+fn test_diagnostics_sanitizes_warnings() {
+	mut d := Diagnostics{}
+	d.warn('store: x\x1b[31m: broken')
+	assert d.lines[0] == 'store: x\\x1b[31m: broken'
+}
+
+fn test_run_empty_include_broken_still_honours_wait() {
+	root := cli_dir('empty_wait_broken')
+	defer {
+		cli_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	file := os.join_path(root, 'a.txt')
+	cli_write(file, 'x')
+	cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+	cli_run(['trash', '--store', store_path, 'empty', '--all', '--include-broken', '--wait', '--yes']) or { panic(err) }
+	gc := os.join_path(store_path, '.gc')
+	assert (os.ls(gc) or { []string{} }).len == 0
+	assert !os.exists(file)
+}
+
+fn test_scan_total_counts_entries_and_broken() {
+	scan := ScanAll{
+		entries: [
+			trash.Entry{
+				id: 'a'
+			},
+			trash.Entry{
+				id: 'b'
+			},
+		]
+		broken:  [
+			ScopedBroken{
+				root: '/tmp/store'
+				item: trash.BrokenItem{
+					id: 'c'
+				}
+			},
+		]
+	}
+	assert scan_total(scan) == 3
 }

@@ -42,7 +42,12 @@ pub fn canonical_target_path(path string) string {
 
 // is_path_within reports whether `path` is `base` itself or lies below it.
 // The comparison is component-aware, so /tmp/graveyard does not match /tmp/grave.
+// An empty `path` or `base` never matches: an empty base would otherwise turn
+// into the prefix `/` and match every absolute path.
 pub fn is_path_within(path string, base string) bool {
+	if path == '' || base == '' {
+		return false
+	}
 	if path == base {
 		return true
 	}

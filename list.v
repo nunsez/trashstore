@@ -4,6 +4,10 @@ import os
 import time
 import internal.format
 
+// ListFilter is the library view of the selection predicates. `now_unix` pins
+// the reference time used by `older_than_seconds`; zero means the wall clock.
+// Pinning it lets a store with an injected clock filter against that clock and
+// keeps the SQL and in-memory filters on the same second.
 @[params]
 pub struct ListFilter {
 pub:
@@ -14,9 +18,19 @@ pub:
 	kind               string
 	grep               string
 	older_than_seconds i64
+	now_unix           i64
 	// limit is the maximum number of entries to return after ordering. A
 	// negative value means no limit; zero selects nothing.
 	limit int = -1
+}
+
+// filter_now returns the reference time of a filter, defaulting to the wall
+// clock when the caller did not pin one.
+fn filter_now(filter ListFilter) i64 {
+	if filter.now_unix > 0 {
+		return filter.now_unix
+	}
+	return time.now().unix()
 }
 
 // BrokenItem is a payload or index row that cannot be used. An empty id marks a
@@ -180,7 +194,7 @@ fn (s Store) filtered_items(filter ListFilter) ![]IndexItem {
 		binds << i64(kind.code())
 	}
 	if filter.older_than_seconds > 0 {
-		cutoff := time.now().unix() - filter.older_than_seconds
+		cutoff := filter_now(filter) - filter.older_than_seconds
 		// Match filter_criteria: keep rows whose whole-second timestamp is not
 		// greater than the cutoff.
 		clauses << 'trashed_at < ?'
@@ -246,7 +260,7 @@ pub fn filter_scope(entries []Entry, cwd string, recursive bool, all bool) []Ent
 // limit are separate stages; this keeps the pipeline order explicit.
 pub fn filter_criteria(entries []Entry, filter ListFilter) []Entry {
 	cutoff := if filter.older_than_seconds > 0 {
-		time.now().unix() - filter.older_than_seconds
+		filter_now(filter) - filter.older_than_seconds
 	} else {
 		i64(0)
 	}
@@ -336,7 +350,12 @@ pub fn filter_entries(entries []Entry, filter ListFilter) []Entry {
 // its subtree. Ordering by size measures every candidate first, because sizes
 // are filled lazily.
 pub fn (s Store) list(filter ListFilter) []Entry {
-	items := s.filtered_items(filter) or { return []Entry{} }
+	now := if filter.now_unix > 0 { filter.now_unix } else { s.clock().unix() }
+	effective := ListFilter{
+		...filter
+		now_unix: now
+	}
+	items := s.filtered_items(effective) or { return []Entry{} }
 	mut entries := []Entry{cap: items.len}
 	for item in items {
 		if item.parse_error != '' || !is_safe_id(item.id) {
@@ -345,13 +364,13 @@ pub fn (s Store) list(filter ListFilter) []Entry {
 		if !data_exists(s, item.id) {
 			continue
 		}
-		if filter.grep != '' && !item.original_path.contains(filter.grep) {
+		if effective.grep != '' && !item.original_path.contains(effective.grep) {
 			continue
 		}
 		entries << item.to_entry()
 	}
-	measured := if filter.sort == 'size' { s.fill_sizes(entries) } else { entries }
-	return select_entries(measured, filter, identity_sizes)
+	measured := if effective.sort == 'size' { s.fill_sizes(entries) } else { entries }
+	return select_entries(measured, effective, identity_sizes)
 }
 
 // short_id_matches reports whether ref is a prefix of the trailing hex part of
@@ -371,13 +390,14 @@ fn short_id_matches(id string, ref string) bool {
 
 // find_in resolves an item by full id, short id (as shown by `trash list`),
 // a unique prefix of either, or original path, against an already scanned entry
-// list. The result is ordered newest first.
+// list. The result is ordered newest first. An empty or NUL-only reference is
+// rejected: it names no item and must never fall back to "the newest one".
 pub fn find_in(entries []Entry, ref string) ![]Entry {
 	if ref == '' {
-		if entries.len == 0 {
-			return not_found_error('trash is empty')
-		}
-		return [entries[0]]
+		return not_found_error('an empty reference does not name a trashed item')
+	}
+	if ref.contains('\x00') {
+		return not_found_error('a reference must not contain a NUL byte')
 	}
 	mut exact_id := []Entry{}
 	mut exact_short := []Entry{}
@@ -407,6 +427,9 @@ pub fn find_in(entries []Entry, ref string) ![]Entry {
 		return matches
 	}
 	candidate := canonical_target_path(ref)
+	if candidate == '' {
+		return not_found_error('no trashed item matches `${ref}`')
+	}
 	mut by_path := []Entry{}
 	for entry in entries {
 		if entry.original_path == candidate {

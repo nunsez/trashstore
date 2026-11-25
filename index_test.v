@@ -111,7 +111,7 @@ fn test_index_lists_by_state() {
 	pending := store.pending_items()!
 	assert pending.len == 2
 	assert store.item_count()! == 3
-	store.delete_all_items()!
+	store.delete_items(['a', 'b', 'c'])!
 	count := store.item_count()!
 	assert count == 0
 }

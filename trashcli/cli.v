@@ -285,6 +285,11 @@ fn parse_count(spec FlagSpec, value string) !int {
 
 // validate checks flag applicability and the relations declared in the table.
 fn (cli Cli) validate(table FlagTable) ! {
+	for target in cli.targets {
+		if target == '' {
+			return error('empty target; pass a real path or item id')
+		}
+	}
 	for kind in cli.set_flags {
 		spec := table.spec(kind)
 		if spec.commands.len > 0 && cli.command !in spec.commands {

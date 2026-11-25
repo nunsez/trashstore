@@ -275,3 +275,28 @@ fn test_copy_path_sync_recreates_symlinks_without_following_them() ! {
 	assert os.readlink(dst)! == outside
 	assert !os.exists(os.join_path(root, 'copy.txt'))
 }
+
+fn test_child_names_reject_nul_and_special_components() {
+	root := dirfd_root('child_name_nul')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	dir := open_dir(root)!
+	defer {
+		dir.close()
+	}
+	for name in ['a\x00b', '.', '..', '', 'a/b'] {
+		mut opened := false
+		dir.open_child(name) or { opened = true }
+		assert opened, 'open_child must reject `${name}`'
+		mut removed := false
+		dir.remove_child_any(name, os.join_path(root, name)) or { removed = true }
+		assert removed, 'remove_child_any must reject `${name}`'
+		mut read := false
+		dir.read_child(name, 16) or { read = true }
+		assert read, 'read_child must reject `${name}`'
+		mut written := false
+		dir.write_child_new(name, 'x') or { written = true }
+		assert written, 'write_child_new must reject `${name}`'
+	}
+}

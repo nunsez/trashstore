@@ -258,11 +258,11 @@ fn run_list(mut set StoreSet, cli Cli, cwd string) ! {
 		if cli.all {
 			println('Trash is empty.')
 		} else {
-			println('No items trashed from ${cwd}.')
+			println('No items trashed from ${sanitize_display(cwd)}.')
 		}
 		return
 	}
-	print_table(entries, cwd, cli.long, cli.palette())
+	print_table(entries, cwd, cli.long, cli.palette(), scan_total(scan))
 }
 
 // select_entries resolves the common selection used by list, restore and empty.
@@ -292,7 +292,7 @@ fn run_restore(mut set StoreSet, cli Cli, cwd string) ! {
 		return
 	}
 	if cli.interactive {
-		selected = prompt_selection(selected)!
+		selected = prompt_selection(selected, scan_total(scan))!
 		if selected.len == 0 {
 			return
 		}
@@ -336,7 +336,7 @@ fn run_restore(mut set StoreSet, cli Cli, cwd string) ! {
 	}
 	if failures.len > 0 {
 		for failure in failures {
-			eprintln(cli.palette().red('error:') + ' ${failure.subject}: ${failure.message}')
+			eprintln(cli.palette().red('error:') + ' ${sanitize_display(failure.subject)}: ${sanitize_message(failure.message)}')
 		}
 		return error('${failures.len} item(s) could not be restored')
 	}
@@ -362,7 +362,7 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 		return
 	}
 	if cli.interactive && selected.len > 0 {
-		selected = prompt_selection(selected)!
+		selected = prompt_selection(selected, scan_total(scan))!
 		if selected.len == 0 {
 			return
 		}
@@ -392,11 +392,14 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 			report := store.doctor(purge: true)!
 			for item in report.items {
 				if item.action != 'purged' {
-					set.diag.warn('could not remove broken item ${sanitize_display(broken_id_label(item.id))}: ${sanitize_display(item.reason)} (${sanitize_display(item.action)})')
+					set.diag.warn('could not remove broken item ${broken_id_label(item.id)}: ${item.reason} (${item.action})')
 				}
 			}
 		}
-	} else if emptied > 0 && cli.wait {
+	}
+	// --wait is independent of --include-broken: emptied payloads must be
+	// collected even when no broken item needed purging.
+	if emptied > 0 && cli.wait {
 		for root in order {
 			if emptied_by_root[root] > 0 {
 				store := set.stores[root] or { continue }
@@ -411,7 +414,7 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 	}
 	if failures.len > 0 {
 		for failure in failures {
-			eprintln(cli.palette().red('error:') + ' ${failure.subject}: ${failure.message}')
+			eprintln(cli.palette().red('error:') + ' ${sanitize_display(failure.subject)}: ${sanitize_message(failure.message)}')
 		}
 		return error('${failures.len} item(s) could not be deleted')
 	}
@@ -475,9 +478,9 @@ fn run_stats(mut set StoreSet, cli Cli) ! {
 			if i > 0 {
 				println('')
 			}
-			println(root_report.root)
+			println(sanitize_display(root_report.root))
 		} else {
-			println(root_report.root)
+			println(sanitize_display(root_report.root))
 		}
 		println('${root_report.items} item(s), ${format.format_size(root_report.size)}${unknown_suffix(root_report.unknown)}')
 		if root_report.oldest != '' {
@@ -613,7 +616,7 @@ fn run_doctor(mut set StoreSet, cli Cli) ! {
 			if i > 0 {
 				println('')
 			}
-			println(scoped.root)
+			println(sanitize_display(scoped.root))
 		}
 		set.print_doctor_report(scoped.report, cli)
 	}
@@ -640,7 +643,7 @@ fn confirm_doctor_purge(set &StoreSet, cli Cli) !bool {
 fn (mut set StoreSet) print_doctor_report(report trash.DoctorReport, cli Cli) {
 	mut printed := false
 	for warning in report.warnings {
-		set.diag.warn(sanitize_display(warning))
+		set.diag.warn(warning)
 	}
 	if report.integrity != '' {
 		println('integrity: ${report.integrity}')
@@ -659,7 +662,7 @@ fn (mut set StoreSet) print_doctor_report(report trash.DoctorReport, cli Cli) {
 		printed = true
 	}
 	if report.backup != '' {
-		println('Backup written to ${report.backup}.')
+		println('Backup written to ${sanitize_display(report.backup)}.')
 		printed = true
 	}
 	if report.broken == 0 {
@@ -695,8 +698,8 @@ fn open_store_or_reset(path string, cli Cli) !&trash.Store {
 
 fn confirm_reset(path string, err IError, assume_yes bool) ! {
 	if !assume_yes {
-		eprintln(err.msg())
-		eprintln('Wiping `${path}` permanently deletes every trashed item.')
+		eprintln(sanitize_message(err.msg()))
+		eprintln('Wiping `${sanitize_display(path)}` permanently deletes every trashed item.')
 		eprint('Wipe the store and start fresh? [y/N] ')
 		answer := os.get_line().trim_space().to_lower()
 		if answer != 'y' && answer != 'yes' {

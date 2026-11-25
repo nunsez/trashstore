@@ -18,10 +18,13 @@ fn C.fchmod(fd int, mode int) int
 fn C.symlinkat(target &char, newdirfd int, linkpath &char) int
 fn C.readlinkat(dirfd int, path &char, buf &char, bufsiz u64) i64
 
-const enoent = 2
-const eexist = 17
-const enotdir = 20
-const eloop = 62
+// Errno values shared with callers that branch on the C error code. They are
+// named here so restore/empty do not hard-code magic numbers.
+pub const enoent = 2
+pub const eexist = 17
+pub const exdev = 18
+pub const enotdir = 20
+pub const eloop = 62
 
 fn dir_open_flags() int {
 	return C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW | C.O_CLOEXEC
@@ -46,12 +49,17 @@ pub fn (d Dir) sync(label string) ! {
 }
 
 // open_child opens a subdirectory relative to d without following symlinks.
+// The name must be a single, real path component: NUL, separators and the
+// special `.`/`..` entries are rejected before they reach the C layer, where a
+// NUL would silently truncate the name.
 pub fn (d Dir) open_child(name string) !Dir {
+	if !valid_child_name(name) {
+		return errs.io_error('invalid child name `${name}`')
+	}
 	fd := C.openat(d.fd, &char(name.str), dir_open_flags(), 0)
 	if fd < 0 {
 		e := C.errno
-		return error_with_code('cannot open `${name}` in `${d.fd}`: ${os.get_error_msg(e)}',
-			e)
+		return error_with_code('cannot open child `${name}`: ${os.get_error_msg(e)}', e)
 	}
 	return Dir{
 		fd: fd
@@ -64,7 +72,7 @@ pub fn (d Dir) open_child(name string) !Dir {
 // a directory; each unlink still goes through the descriptor of its parent.
 // A missing child is not an error, so removal is idempotent.
 pub fn (d Dir) remove_child_any(name string, path string) ! {
-	if name == '' || name == '.' || name == '..' || name.contains('/') {
+	if !valid_child_name(name) {
 		return errs.io_error('invalid child name `${name}`')
 	}
 	child := d.open_child(name) or {
@@ -98,6 +106,17 @@ pub fn (d Dir) remove_child_any(name string, path string) ! {
 		}
 		return errs.io_error('cannot remove directory `${path}`: ${os.get_error_msg(e)}')
 	}
+}
+
+// child_exists reports whether a child name exists below d without following a
+// symlink and without opening it. It is used to refuse a temporary path that we
+// did not create, so cleanup never removes someone else's file.
+pub fn (d Dir) child_exists(name string) bool {
+	if !valid_child_name(name) {
+		return false
+	}
+	mut st := C.stat{}
+	return C.fstatat(d.fd, &char(name.str), &st, C.AT_SYMLINK_NOFOLLOW) == 0
 }
 
 // fd_is_regular reports whether fd refers to a regular file. It is used to
@@ -185,6 +204,9 @@ pub fn (d Dir) measure_tree(path string) !u64 {
 
 // read_child reads a small regular file below d without following symlinks.
 pub fn (d Dir) read_child(name string, max_bytes int) !string {
+	if !valid_child_name(name) {
+		return errs.io_error('invalid child name `${name}`')
+	}
 	fd := C.openat(d.fd, &char(name.str), C.O_RDONLY | C.O_NOFOLLOW | C.O_CLOEXEC, 0)
 	if fd < 0 {
 		e := C.errno
@@ -208,6 +230,9 @@ pub fn (d Dir) read_child(name string, max_bytes int) !string {
 // file is created with O_EXCL|O_NOFOLLOW and fsynced, so a symlink cannot
 // redirect the write and a stale marker is never silently reused.
 pub fn (d Dir) write_child_new(name string, content string) ! {
+	if !valid_child_name(name) {
+		return errs.io_error('invalid child name `${name}`')
+	}
 	fd := C.openat(d.fd, &char(name.str), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_CLOEXEC | C.O_NOFOLLOW, 0o600)
 	if fd < 0 {
 		e := C.errno

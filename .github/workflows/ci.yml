@@ -27,7 +27,7 @@ jobs:
           cache: true
       - run: v fmt -verify .
       - run: v vet .
-      - run: v vet ./trashcli ./internal/sqlite
+      - run: v vet ./trashcli ./internal/sqlite ./internal/fsx ./internal/pathx ./internal/errs ./internal/format
       - run: v vet scripts/
       - run: v test .
       - run: v -prod test .

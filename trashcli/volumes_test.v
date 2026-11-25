@@ -74,6 +74,12 @@ fn test_volume_registry_roundtrip() {
 	assert records[0].mount == mount
 	assert records[0].root == store
 	assert registered_roots(home) == [store]
+	// The registry is replaced under an exclusive lock and its temporary file
+	// never survives a successful write.
+	assert os.exists('${volumes_file(home)}.lock')
+	for name in os.ls(home) or { []string{} } {
+		assert !name.contains('.tmp-'), 'leftover registry temporary `${name}`'
+	}
 }
 
 fn test_roots_for_read_explicit_store() {

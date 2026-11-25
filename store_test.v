@@ -774,7 +774,7 @@ fn test_restore_by_id() {
 	assert !os.is_dir(store.item_dir(entry.id))
 }
 
-fn test_restore_last_and_by_path() {
+fn test_restore_by_path_and_rejects_empty_ref() {
 	root := core_dir('restore_path')
 	defer {
 		core_cleanup(root)
@@ -787,14 +787,17 @@ fn test_restore_last_and_by_path() {
 	core_write(b, 'b')
 	core_put(store, b, false)
 
-	last := store.restore('') or { panic(err) }
-	assert last[0].restored_to == b
-	assert os.exists(b)
-	assert !os.exists(a)
+	// An empty reference names nothing; it must never silently pick the
+	// newest item (or, with a recursive scope, the whole store).
+	mut empty_failed := false
+	store.restore('') or { empty_failed = true }
+	assert empty_failed
+	assert !os.exists(a) && !os.exists(b)
 
 	by_path := store.restore(a) or { panic(err) }
 	assert by_path[0].restored_to == a
 	assert os.exists(a)
+	assert !os.exists(b)
 }
 
 fn test_restore_uses_suffix_on_conflict() {
@@ -1626,8 +1629,11 @@ fn test_open_with_can_refuse_creation() {
 	file := os.join_path(root, 'a.txt')
 	core_write(file, 'x')
 	core_put(store, file, false)
+	// create:false must not create anything, not even the advisory lock file.
+	os.rm(os.join_path(missing, lock_filename)) or { panic(err) }
 	again := open_with(missing, create: false) or { panic(err) }
 	assert again.list().len == 1
+	assert !os.exists(os.join_path(missing, lock_filename))
 }
 
 fn test_put_many_and_stats() {
@@ -3220,4 +3226,73 @@ fn test_open_rejects_lock_that_is_not_a_regular_file() {
 		assert err.msg().contains('regular file')
 	}
 	assert failed
+}
+
+fn test_find_rejects_empty_and_nul_references() {
+	entries := [
+		Entry{
+			id:            'a'
+			original_path: '/tmp/a'
+		},
+	]
+	mut empty_failed := false
+	find_in(entries, '') or { empty_failed = true }
+	assert empty_failed
+	mut nul_failed := false
+	find_in(entries, '\x00') or { nul_failed = true }
+	assert nul_failed
+	// A rebuilt row has an empty original_path; a NUL reference used to
+	// canonicalize to '' and match it.
+	rebuilt := [
+		Entry{
+			id:            'b'
+			original_path: ''
+		},
+	]
+	mut rebuilt_failed := false
+	find_in(rebuilt, '\x00') or { rebuilt_failed = true }
+	assert rebuilt_failed
+}
+
+fn test_cross_restore_failure_leaves_no_temp_or_marker() {
+	root := core_dir('cross_restore_cleanup')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	payload := os.join_path(root, 'payload')
+	os.mkdir(payload, mode: 0o700) or { panic(err) }
+	core_write(os.join_path(payload, 'ok'), 'ok')
+	fifo := os.join_path(payload, 'fifo')
+	$if macos {
+		if C.mkfifo(&char(fifo.str), u16(0o600)) != 0 {
+			panic('cannot create fifo: ${os.get_error_msg(C.errno)}')
+		}
+	} $else {
+		if C.mkfifo(&char(fifo.str), u32(0o600)) != 0 {
+			panic('cannot create fifo: ${os.get_error_msg(C.errno)}')
+		}
+	}
+	entry := core_put(store, payload, true)
+	target_parent := os.join_path(root, 'restore')
+	os.mkdir(target_parent, mode: 0o700) or { panic(err) }
+	mut src := fsx.open_dir(store.item_dir(entry.id))!
+	defer {
+		src.close()
+	}
+	mut dst := fsx.open_dir(target_parent)!
+	defer {
+		dst.close()
+	}
+	mut item := store.get_item(entry.id)!
+	mut failed := false
+	store.move_restore_data_cross(entry.id, src, dst, target_parent, 'payload', mut item) or {
+		failed = true
+	}
+	assert failed
+	// The payload is untouched and the half-copied temporary tree is gone.
+	assert os.is_dir(store.data_path(entry.id))
+	for name in os.ls(target_parent) or { []string{} } {
+		assert !name.contains('trash-tmp'), 'leftover temporary entry `${name}`'
+	}
 }
