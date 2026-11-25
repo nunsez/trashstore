@@ -57,7 +57,6 @@ mut:
 pub struct Store {
 pub:
 	root string
-	mode u32
 mut:
 	db         &StoreDb = unsafe { nil }
 	id_gen     ?IdGen
@@ -138,16 +137,8 @@ pub fn open_with(root string, opts StoreOptions) !&Store {
 			return context_error(.io, 'create trash directory', resolved, err)
 		}
 	}
-	actual_mode := if root_existed {
-		(os.stat(resolved) or {
-			return context_error(.io, 'stat trash directory', resolved, err)
-		}).mode & 0o777
-	} else {
-		opts.mode
-	}
 	mut s := &Store{
 		root:  resolved
-		mode:  actual_mode
 		clock: time.now
 	}
 	if gen := opts.id_gen {
@@ -219,10 +210,6 @@ fn (s Store) items_dir() string {
 	return os.join_path(s.root, items_dirname)
 }
 
-fn (s Store) inflight_dir() string {
-	return os.join_path(s.root, inflight_dirname)
-}
-
 fn (s Store) gc_dir() string {
 	return os.join_path(s.root, gc_dirname)
 }
@@ -254,58 +241,25 @@ pub fn (s Store) payload_path_checked(id string) !string {
 	return s.data_path(id)
 }
 
-struct StoreLock {
-mut:
-	fd int = -1
+fn (s Store) lock_shared() !fsx.FileLock {
+	mut l := fsx.open_lock(s.lock_path())!
+	l.lock_shared()!
+	return l
 }
 
-fn (s Store) open_lock_file() !int {
-	fd := C.open(&char(s.lock_path().str), C.O_RDWR | C.O_CREAT | C.O_CLOEXEC | C.O_NOFOLLOW, 0o600)
-	if fd < 0 {
-		return io_error('cannot open lock file `${s.lock_path()}`: ${os.get_error_msg(C.errno)}')
-	}
-	return fd
+fn (s Store) lock_exclusive() !fsx.FileLock {
+	mut l := fsx.open_lock(s.lock_path())!
+	l.lock_exclusive()!
+	return l
 }
 
-fn (mut l StoreLock) release() {
-	if l.fd >= 0 {
-		C.flock(l.fd, C.LOCK_UN)
-		C.close(l.fd)
-		l.fd = -1
-	}
-}
-
-fn (s Store) lock_shared() !StoreLock {
-	fd := s.open_lock_file()!
-	if C.flock(fd, C.LOCK_SH) != 0 {
-		C.close(fd)
-		return io_error('cannot acquire shared lock on `${s.lock_path()}`: ${os.get_error_msg(C.errno)}')
-	}
-	return StoreLock{
-		fd: fd
-	}
-}
-
-fn (s Store) lock_exclusive() !StoreLock {
-	fd := s.open_lock_file()!
-	if C.flock(fd, C.LOCK_EX) != 0 {
-		C.close(fd)
-		return io_error('cannot acquire exclusive lock on `${s.lock_path()}`: ${os.get_error_msg(C.errno)}')
-	}
-	return StoreLock{
-		fd: fd
-	}
-}
-
-fn (s Store) try_lock_exclusive() ?StoreLock {
-	fd := s.open_lock_file() or { return none }
-	if C.flock(fd, C.LOCK_EX | C.LOCK_NB) != 0 {
-		C.close(fd)
+fn (s Store) try_lock_exclusive() ?fsx.FileLock {
+	mut l := fsx.open_lock(s.lock_path()) or { return none }
+	if !l.try_lock_exclusive() {
+		l.release()
 		return none
 	}
-	return StoreLock{
-		fd: fd
-	}
+	return l
 }
 
 fn (s Store) sync_dir(path string) ! {
@@ -423,16 +377,23 @@ fn is_safe_id(id string) bool {
 		&& !id.contains('\x00')
 }
 
-fn (s Store) remove_item_dir_if_empty(id string) ! {
-	dir := s.item_dir(id)
-	if os.is_link(dir) {
-		// Never follow a symlinked item directory.
-		return
+// remove_item_dir removes an item directory and anything left in it. The items
+// directory is opened with O_NOFOLLOW and the removal is descriptor-relative,
+// so an item path swapped for a symlink cannot redirect the deletion outside
+// items/. A missing item directory is not an error.
+fn (s Store) remove_item_dir(id string) ! {
+	if !is_safe_id(id) {
+		return invalid_target_error('invalid item id `${id}`')
 	}
-	if os.is_dir(dir) {
-		os.rmdir_all(dir)!
-		s.sync_dir(s.items_dir())!
+	if os.is_link(s.items_dir()) {
+		return invalid_target_error('items directory `${s.items_dir()}` must not be a symlink')
 	}
+	mut items := fsx.open_dir(s.items_dir())!
+	defer {
+		items.close()
+	}
+	items.remove_child_any(id, s.item_dir(id))!
+	items.sync(s.items_dir())!
 }
 
 fn (s Store) recover_put(item IndexItem) ! {
@@ -444,7 +405,7 @@ fn (s Store) recover_put(item IndexItem) ! {
 		return
 	}
 	s.delete_item(item.id)!
-	s.remove_item_dir_if_empty(item.id)!
+	s.remove_item_dir(item.id)!
 }
 
 // is_safe_restore_target reports whether a journaled restore target can be
@@ -488,7 +449,7 @@ fn (s Store) recover_restore_target(item IndexItem, target string) !(bool, strin
 		// The rename completed before the crash; the target is our payload, so
 		// finish the restore instead of duplicating it.
 		s.delete_item(item.id)!
-		s.remove_item_dir_if_empty(item.id)!
+		s.remove_item_dir(item.id)!
 		return true, ''
 	}
 	return false, ''
@@ -522,7 +483,7 @@ fn (s Store) recover_restore(item IndexItem) !string {
 		s.update_item(restored)!
 	} else {
 		s.delete_item(item.id)!
-		s.remove_item_dir_if_empty(item.id)!
+		s.remove_item_dir(item.id)!
 	}
 	return warning
 }

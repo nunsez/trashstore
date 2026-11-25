@@ -13,6 +13,7 @@ fn C.openat(dirfd int, path &char, flags int, ...int) int
 fn C.mkdirat(dirfd int, path &char, mode int) int
 fn C.unlinkat(dirfd int, path &char, flags int) int
 fn C.fstatat(dirfd int, path &char, buf &C.stat, flags int) int
+fn C.fstat(fd int, buf &C.stat) int
 fn C.fchmod(fd int, mode int) int
 fn C.symlinkat(target &char, newdirfd int, linkpath &char) int
 fn C.readlinkat(dirfd int, path &char, buf &char, bufsiz u64) i64
@@ -97,6 +98,56 @@ pub fn (d Dir) remove_child_any(name string, path string) ! {
 		}
 		return errs.io_error('cannot remove directory `${path}`: ${os.get_error_msg(e)}')
 	}
+}
+
+// fd_is_regular reports whether fd refers to a regular file. It is used to
+// reject a lock file that was replaced by a directory or a device node between
+// open() and the first use of the descriptor.
+pub fn fd_is_regular(fd int) bool {
+	mut st := C.stat{}
+	if C.fstat(fd, &st) != 0 {
+		return false
+	}
+	return u32(st.st_mode) & s_ifmt == s_ifreg
+}
+
+// measure_tree sums the apparent size of the regular files below d without
+// following symlinks. `path` is only used to enumerate a directory; every stat
+// and open is relative to the descriptor, so a child swapped for a symlink
+// after it was listed cannot redirect the walk outside the tree.
+pub fn (d Dir) measure_tree(path string) !u64 {
+	names := os.ls(path) or { return err }
+	mut total := u64(0)
+	for name in names {
+		if !valid_child_name(name) {
+			continue
+		}
+		mut st := C.stat{}
+		if C.fstatat(d.fd, &char(name.str), &st, C.AT_SYMLINK_NOFOLLOW) != 0 {
+			e := C.errno
+			if e == enoent {
+				// The entry vanished between listing and stat.
+				continue
+			}
+			return error_with_code('cannot stat `${path}/${name}`: ${os.get_error_msg(e)}', e)
+		}
+		match u32(st.st_mode) & s_ifmt {
+			s_ifdir {
+				child := d.open_child(name)!
+				child_size := child.measure_tree(os.join_path(path, name)) or {
+					child.close()
+					return err
+				}
+				child.close()
+				total += child_size
+			}
+			s_ifreg {
+				total += u64(st.st_size)
+			}
+			else {}
+		}
+	}
+	return total
 }
 
 // read_child reads a small regular file below d without following symlinks.

@@ -17,10 +17,6 @@ fn ambiguous_error(msg string) TrashError {
 	return errs.ambiguous_error(msg)
 }
 
-fn in_progress_error(msg string) TrashError {
-	return errs.in_progress_error(msg)
-}
-
 fn invalid_target_error(msg string) TrashError {
 	return errs.invalid_target_error(msg)
 }

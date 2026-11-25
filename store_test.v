@@ -1674,6 +1674,40 @@ fn test_restore_batch_reports_partial_failure() {
 	assert os.exists(a)
 }
 
+fn test_store_list_matches_select_entries() {
+	root := core_dir('list_matches_select')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	for name in ['report.txt', 'notes.md', 'build'] {
+		file := os.join_path(root, name)
+		core_write(file, 'x')
+		core_put(store, file, name == 'build')
+	}
+	filters := [
+		ListFilter{
+			kind: 'file'
+		},
+		ListFilter{
+			grep: 'notes'
+		},
+		ListFilter{
+			sort:  'path'
+			limit: 2
+		},
+		ListFilter{
+			sort:  'date'
+			limit: 0
+		},
+	]
+	for filter in filters {
+		listed := store.list(filter)
+		selected := select_entries(store.scan().entries, filter, identity_sizes)
+		assert listed.map(it.id) == selected.map(it.id), 'filter ${filter} diverged'
+	}
+}
+
 fn test_filter_entries_by_kind_grep_and_age() {
 	root := core_dir('filter')
 	defer {
@@ -2314,7 +2348,7 @@ fn test_reopen_rejects_group_accessible_store_dirs() {
 		assert failed, 'group-accessible store root must be rejected'
 		os.chmod(store.root, 0o700) or { panic(err) }
 		reopened := open(store_path) or { panic(err) }
-		assert reopened.mode & 0o777 == 0o700
+		assert (os.stat(reopened.root) or { panic(err) }).mode & 0o777 == 0o700
 	}
 }
 
@@ -3011,4 +3045,82 @@ fn test_open_rejects_symlinked_index_sidecars() {
 		assert failed
 		assert (os.read_file(outside) or { '' }) == 'keep'
 	}
+}
+
+$if macos {
+	fn C.mkfifo(path &char, mode u16) int
+} $else {
+	fn C.mkfifo(path &char, mode u32) int
+}
+
+fn test_remove_item_dir_does_not_follow_a_symlink() {
+	root := core_dir('remove_item_symlink')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'x')
+	entry := core_put(store, file, false)
+	victim := os.join_path(root, 'victim')
+	os.mkdir(victim) or { panic(err) }
+	os.write_file(os.join_path(victim, 'keep'), 'keep') or { panic(err) }
+	// Replace the item directory with a symlink to a directory outside the
+	// store. Removal must unlink the symlink, not delete the victim.
+	os.rm(store.data_path(entry.id)) or { panic(err) }
+	os.rmdir_all(store.item_dir(entry.id)) or { panic(err) }
+	os.symlink(victim, store.item_dir(entry.id)) or { panic(err) }
+	store.remove_item_dir(entry.id) or { panic(err) }
+	assert os.is_dir(victim)
+	assert (os.read_file(os.join_path(victim, 'keep')) or { '' }) == 'keep'
+	assert !os.exists(store.item_dir(entry.id))
+	assert !os.is_link(store.item_dir(entry.id))
+}
+
+fn test_reset_store_unlinks_symlinked_items_dir() {
+	root := core_dir('reset_store_symlink')
+	defer {
+		core_cleanup(root)
+	}
+	trash_path := os.join_path(root, 'trash')
+	store := open(trash_path) or { panic(err) }
+	victim := os.join_path(root, 'victim')
+	os.mkdir(victim) or { panic(err) }
+	os.write_file(os.join_path(victim, 'keep'), 'keep') or { panic(err) }
+	os.rmdir_all(store.items_dir()) or { panic(err) }
+	os.symlink(victim, store.items_dir()) or { panic(err) }
+	mut db := store.conn()!
+	db.exec('PRAGMA user_version = 99')!
+	db.close()
+	reset_store(trash_path)!
+	assert os.is_dir(victim)
+	assert (os.read_file(os.join_path(victim, 'keep')) or { '' }) == 'keep'
+	assert !os.exists(store.items_dir())
+	assert !os.is_link(store.items_dir())
+}
+
+fn test_open_rejects_lock_that_is_not_a_regular_file() {
+	root := core_dir('lock_not_regular')
+	defer {
+		core_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	mut store := open(store_path) or { panic(err) }
+	store.close()
+	os.rm(store.lock_path()) or { panic(err) }
+	mut fifo_result := 0
+	$if macos {
+		fifo_result = C.mkfifo(&char(store.lock_path().str), u16(0o600))
+	} $else {
+		fifo_result = C.mkfifo(&char(store.lock_path().str), u32(0o600))
+	}
+	if fifo_result != 0 {
+		panic('cannot create fifo: ${os.get_error_msg(C.errno)}')
+	}
+	mut failed := false
+	open(store_path) or {
+		failed = true
+		assert err.msg().contains('regular file')
+	}
+	assert failed
 }

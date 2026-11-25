@@ -3,66 +3,25 @@ module fsx
 import os
 import internal.errs
 
-// remove_any removes a file, symlink or directory tree if it exists.
+// remove_any removes a file, symlink or directory tree if it exists. The
+// parent is opened with O_NOFOLLOW and the removal itself is relative to that
+// descriptor, so a component swapped for a symlink cannot redirect it.
 pub fn remove_any(path string) ! {
-	if !os.exists(path) && !os.is_link(path) {
-		return
+	name := os.file_name(path)
+	if name == '' || name == '.' || name == '..' {
+		return errs.io_error('invalid path `${path}`')
 	}
-	if os.is_link(path) || !os.is_dir(path) {
-		os.rm(path)!
-		return
+	parent_path := os.real_path(os.dir(path))
+	mut parent := open_dir(parent_path)!
+	defer {
+		parent.close()
 	}
-	os.rmdir_all(path)!
-}
-
-fn fsync_parent(path string) ! {
-	fsync_dir(os.dir(path))!
+	parent.remove_child_any(name, path)!
+	parent.sync(parent_path)!
 }
 
 fn C.read(fd int, buf voidptr, count u64) i64
 fn C.write(fd int, buf voidptr, count u64) i64
-
-fn fsync_path(path string) ! {
-	fd := C.open(&char(path.str), C.O_RDONLY | C.O_CLOEXEC, 0)
-	if fd < 0 {
-		return errs.io_error('cannot open `${path}` for fsync: ${os.get_error_msg(C.errno)}')
-	}
-	defer {
-		C.close(fd)
-	}
-	fsync_fd(fd, path)!
-}
-
-fn copy_file_sync(src string, dst string, mode u32) ! {
-	$if macos {
-		if !os.exists(dst) && !os.is_link(dst) {
-			if C.clonefile(&char(src.str), &char(dst.str), 0) == 0 {
-				fsync_path(dst)!
-				os.chmod(dst, int(mode & 0o777))!
-				return
-			}
-			e := C.errno
-			if e != C.EXDEV && e != C.ENOTSUP && e != C.EINVAL && e != C.ENOSYS {
-				return errs.io_error('clonefile `${src}` -> `${dst}`: ${os.get_error_msg(e)}')
-			}
-		}
-	}
-	in_fd := C.open(&char(src.str), C.O_RDONLY | C.O_CLOEXEC, 0)
-	if in_fd < 0 {
-		return errs.io_error('cannot open `${src}` for reading: ${os.get_error_msg(C.errno)}')
-	}
-	defer {
-		C.close(in_fd)
-	}
-	out_fd := C.open(&char(dst.str), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_CLOEXEC, 0o600)
-	if out_fd < 0 {
-		return errs.io_error('cannot create `${dst}`: ${os.get_error_msg(C.errno)}')
-	}
-	defer {
-		C.close(out_fd)
-	}
-	copy_fds_sync(in_fd, out_fd, mode, src, dst)!
-}
 
 // copy_fds_sync copies between already-open descriptors. It never touches a
 // path, so it can be used by dirfd-relative callers that must not follow a
@@ -129,28 +88,24 @@ fn copy_fds_sync(in_fd int, out_fd int, mode u32, src string, dst string) ! {
 	}
 }
 
-// copy_path_sync copies a file, symlink or directory tree without replacing dst.
+// copy_path_sync copies a file, symlink or directory tree without replacing
+// dst. Both parents are opened component by component with O_NOFOLLOW and the
+// whole copy is descriptor-relative, so a path swapped for a symlink after it
+// was validated cannot make the copy read or write outside those parents.
 pub fn copy_path_sync(src string, dst string) ! {
-	st := os.lstat(src)!
-	if os.is_link(src) {
-		target := os.readlink(src)!
-		os.symlink(target, dst)!
-		fsync_parent(dst)!
-		return
+	src_parent_path := os.real_path(os.dir(src))
+	dst_parent_path := os.real_path(os.dir(dst))
+	mut src_parent := open_dir(src_parent_path)!
+	defer {
+		src_parent.close()
 	}
-	if os.is_dir(src) {
-		// Populate with a permissive mode first; a directory with mode 000
-		// could not receive its children.
-		os.mkdir(dst, mode: 0o700)!
-		for entry in os.ls(src)! {
-			copy_path_sync(os.join_path(src, entry), os.join_path(dst, entry))!
-		}
-		fsync_dir(dst)!
-		os.chmod(dst, int(st.mode & 0o777))!
-		return
+	mut dst_parent := open_dir(dst_parent_path)!
+	defer {
+		dst_parent.close()
 	}
-	if !os.is_file(src) {
-		return errs.unsupported_error('cannot copy special file `${src}` across filesystems')
-	}
-	copy_file_sync(src, dst, st.mode)!
+	src_name := os.file_name(src)
+	dst_name := os.file_name(dst)
+	src_parent.copy_child_tree(src_name, os.join_path(src_parent_path, src_name), dst_parent,
+		dst_name, os.join_path(dst_parent_path, dst_name))!
+	dst_parent.sync(dst_parent_path)!
 }

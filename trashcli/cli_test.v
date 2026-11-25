@@ -84,19 +84,6 @@ fn test_canonical_path_resolves_existing_symlink_directory() {
 	}
 }
 
-fn test_resolve_name_conflict_free_and_taken() {
-	root := cli_dir('conflict')
-	defer {
-		cli_cleanup(root)
-	}
-	base := os.join_path(root, 'a')
-	assert pathx.resolve_name_conflict(base) == base
-	cli_write(base, 'x')
-	assert pathx.resolve_name_conflict(base) == '${base}~1'
-	cli_write('${base}~1', 'x')
-	assert pathx.resolve_name_conflict(base) == '${base}~2'
-}
-
 fn test_resolve_store_prefers_cli_path() {
 	path := os.join_path(os.temp_dir(), 'trash-cli-grave')
 	assert (resolve_store(path) or { panic(err) }) == pathx.canonical_path(path)
@@ -541,6 +528,49 @@ fn test_parse_rejects_invalid_duration() {
 	assert failed
 }
 
+fn test_parse_duration_rejects_overflow() {
+	assert parse_duration('30d')! == i64(86400 * 30)
+	assert parse_duration('1s')! == i64(1)
+	mut failed := false
+	parse_duration('9223372036854775807w') or {
+		failed = true
+		assert err.msg().contains('too large')
+	}
+	assert failed, 'a duration that overflows i64 must be rejected'
+	failed = false
+	parse_duration('999999999999999999999999d') or { failed = true }
+	assert failed, 'a number that does not fit in i64 must be rejected'
+}
+
+fn test_run_where_stdin_ignores_empty_lines_but_keeps_spaces() {
+	$if !windows {
+		root := cli_dir('run_where_stdin_spaces')
+		defer {
+			cli_cleanup(root)
+		}
+		store_path := os.join_path(root, 'trash')
+		file := os.join_path(root, 'a.txt')
+		cli_write(file, 'hello')
+		cli_run(['trash', '--store', store_path, file]) or { panic(err) }
+		store := trash.open(store_path) or { panic(err) }
+		id := store.list()[0].id
+		refs_file := os.join_path(root, 'refs.txt')
+		os.write_file(refs_file, '\n\n${id}\n\n') or { panic(err) }
+		mut old := stdin_from_file(refs_file)
+		cli_run(['trash', '--store', store_path, 'where']) or { panic(err) }
+		stdin_restore(old)
+
+		// Spaces are part of the reference, so a trailing space must not be
+		// silently trimmed into a match.
+		os.write_file(refs_file, '${id} \n') or { panic(err) }
+		old = stdin_from_file(refs_file)
+		mut failed := false
+		cli_run(['trash', '--store', store_path, 'where']) or { failed = true }
+		stdin_restore(old)
+		assert failed, 'a trailing space must stay part of the reference'
+	}
+}
+
 fn test_parse_rejects_interactive_outside_selection() {
 	mut failed := false
 	Cli.parse(['trash', 'list', '--interactive']) or { failed = true }
@@ -866,6 +896,43 @@ fn table_test_entries() []trash.Entry {
 			state:         .trashed
 		},
 	]
+}
+
+fn test_cli_select_matches_library_select_entries() {
+	entries := table_test_entries()
+	filters := [
+		trash.ListFilter{
+			kind: 'file'
+		},
+		trash.ListFilter{
+			grep: 'build'
+		},
+		trash.ListFilter{
+			sort:  'path'
+			limit: 1
+		},
+		trash.ListFilter{
+			sort:  'date'
+			limit: 0
+		},
+		trash.ListFilter{
+			kind:               'file'
+			grep:               'notes'
+			older_than_seconds: 24 * 3600
+		},
+	]
+	for filter in filters {
+		from_library := trash.select_entries(entries, filter, trash.identity_sizes)
+		from_cli := select(entries, SelectionOptions{
+			all:                true
+			kind:               filter.kind
+			grep:               filter.grep
+			older_than_seconds: filter.older_than_seconds
+			sort:               filter.sort
+			limit:              filter.limit
+		}, identity_sizes)!
+		assert from_library.map(it.id) == from_cli.map(it.id), 'filter ${filter} diverged'
+	}
 }
 
 fn test_table_header_and_alignment() {

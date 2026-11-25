@@ -22,7 +22,6 @@ pub:
 	op         string
 	path       string
 	error_code int
-	cause      IError = none
 }
 
 // msg returns the human-readable error message.
@@ -63,7 +62,6 @@ pub fn context_error(kind ErrorKind, op string, path string, err IError) TrashEr
 		op:         op
 		path:       path
 		error_code: err.code()
-		cause:      err
 	}
 }
 
@@ -75,11 +73,6 @@ pub fn not_found_error(msg string) TrashError {
 // ambiguous_error reports an ambiguous id prefix.
 pub fn ambiguous_error(msg string) TrashError {
 	return trash_error(.ambiguous, msg)
-}
-
-// in_progress_error reports a conflicting in-flight operation.
-pub fn in_progress_error(msg string) TrashError {
-	return trash_error(.in_progress, msg)
 }
 
 // invalid_target_error reports an unsafe target.

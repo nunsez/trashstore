@@ -295,7 +295,7 @@ fn (s Store) execute_restore_locked(mut p PendingRestore) !RestoreResult {
 	// The target directory is synced once per batch by restore_batch. The item
 	// directory is about to be removed and its parent is synced at the end, so
 	// syncing it here would only add a per-item fsync.
-	os.rmdir_all(s.item_dir(p.entry.id))!
+	s.remove_item_dir(p.entry.id)!
 	return RestoreResult{
 		entry:       item.to_entry()
 		restored_to: target

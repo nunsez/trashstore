@@ -1,5 +1,6 @@
 module trash
 
+import internal.fsx
 import os
 
 // measure_path returns the apparent size of a payload: the size of a regular
@@ -19,28 +20,15 @@ pub fn measure_path(path string, kind EntryKind) (u64, bool) {
 }
 
 fn measure_dir(path string) (u64, bool) {
-	st := os.lstat(path) or { return 0, false }
-	if st.get_filetype() != .directory {
+	if os.is_link(path) {
 		return 0, false
 	}
-	names := os.ls(path) or { return 0, false }
-	mut total := u64(0)
-	for name in names {
-		child := os.join_path(path, name)
-		child_st := os.lstat(child) or { return 0, false }
-		match child_st.get_filetype() {
-			.directory {
-				size, ok := measure_dir(child)
-				if !ok {
-					return 0, false
-				}
-				total += size
-			}
-			.regular { total += child_st.size }
-			else {}
-		}
+	mut dir := fsx.open_dir(path) or { return 0, false }
+	defer {
+		dir.close()
 	}
-	return total, true
+	size := dir.measure_tree(path) or { return 0, false }
+	return size, true
 }
 
 // fill_size measures an item whose size is still unknown and persists the

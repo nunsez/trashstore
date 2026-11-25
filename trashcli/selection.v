@@ -39,19 +39,17 @@ fn selection_options(cli Cli, cwd string) SelectionOptions {
 	}
 }
 
-// SizeFiller measures the entries whose size is still unknown. The CLI passes
-// a Store-backed filler; pure callers can use identity_sizes.
-pub type SizeFiller = fn (entries []trash.Entry) []trash.Entry
-
 fn identity_sizes(entries []trash.Entry) []trash.Entry {
 	return entries
 }
 
 // select applies the shared selection pipeline used by list, restore and empty:
-// resolve refs -> scope -> keep -> predicates -> size -> sort -> limit. Sizes
-// are measured only after predicates and only when sorting by size, and always
-// before the limit so `--limit 1 --sort size` returns the largest match.
-pub fn select(entries []trash.Entry, opts SelectionOptions, fill SizeFiller) ![]trash.Entry {
+// resolve refs -> scope -> keep -> predicates -> size -> sort -> limit. The
+// tail (predicates -> size -> sort -> limit) is trash.select_entries, so the
+// library and the CLI cannot drift apart. Sizes are measured only after
+// predicates and only when sorting by size, and always before the limit so
+// `--limit 1 --sort size` returns the largest match.
+pub fn select(entries []trash.Entry, opts SelectionOptions, fill trash.SizeFiller) ![]trash.Entry {
 	if opts.all && opts.targets.len > 0 {
 		return error('--all cannot be combined with targets')
 	}
@@ -70,14 +68,13 @@ pub fn select(entries []trash.Entry, opts SelectionOptions, fill SizeFiller) ![]
 	} else {
 		base
 	}
-	filtered := trash.filter_criteria(kept, trash.ListFilter{
-		all:                true
+	return trash.select_entries(kept, trash.ListFilter{
 		kind:               opts.kind
 		grep:               opts.grep
 		older_than_seconds: opts.older_than_seconds
-	})
-	measured := if opts.sort == 'size' { fill(filtered) } else { filtered }
-	return trash.limit_entries(trash.sort_entries(measured, opts.sort), opts.limit)
+		sort:               opts.sort
+		limit:              opts.limit
+	}, fill)
 }
 
 // resolve_selection is the store-less variant of select, kept for callers that

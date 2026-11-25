@@ -51,7 +51,9 @@ be undone.
 .B where
 Print the payload path of each selected item inside the trash, one per line.
 Refs are resolved from the arguments or, when stdin is not a terminal, from one
-ref per line on stdin. Multiple refs produce one path per match, in argument
+ref per line on stdin. Lines are used verbatim (only the line ending is
+stripped), so leading and trailing spaces stay part of the reference; empty
+lines are ignored. Multiple refs produce one path per match, in argument
 order, with duplicates dropped; \fBwhere\fR prints no metadata, so use
 \fBlist\fR for that. Unresolvable refs read from stdin are reported as
 warnings and skipped, and the exit status is non-zero; an unresolvable explicit
@@ -102,7 +104,7 @@ With \fBput\fR, confirm each file before trashing. With \fBrestore\fR or
 .TP
 .B \-y, \-\-yes
 Do not ask for confirmation. Required for non-interactive multi-item
-\fBrestore\fR and \fBempty\fR.
+\fBrestore\fR, \fBempty\fR, and \fBdoctor --doctor-purge\fR.
 .TP
 .B \-\-all
 Use the whole trash instead of the current directory. Cannot be combined with
@@ -120,7 +122,8 @@ Print machine-readable JSON where supported.
 Show full ids, kinds, and full timestamps in \fBlist\fR.
 .TP
 .B \-\-limit \fIN\fR
-Use at most \fIN\fR items after sorting.
+Use at most \fIN\fR items after sorting. \fB0\fR selects nothing and
+omitting the flag means no limit.
 .TP
 .B \-\-sort \fIMODE\fR
 Sort by \fBdate\fR (newest first, the default), \fBsize\fR, \fBpath\fR, or
@@ -165,7 +168,9 @@ elsewhere, so rebuilt items cannot be restored in place.
 With \fBdoctor\fR, rebuild the index b-trees.
 .TP
 .B \-\-doctor\-purge
-With \fBdoctor\fR, permanently remove broken items.
+With \fBdoctor\fR, permanently remove broken items. This is destructive, so
+it asks for confirmation, and requires \fB--yes\fR when stdin is not a
+terminal.
 .TP
 .B \-\-wait
 With \fBempty\fR, wait for permanent deletion instead of deferring GC.
@@ -191,10 +196,11 @@ Show this help. With a command, show help for that command.
 .B \-V, \-\-version
 Show the program version and the SQLite engine version.
 .SH ITEM IDS
-\fBlist\fR shows the last eight hex characters of each item id. \fBrestore\fR,
-\fBempty\fR, and \fBwhere\fR accept that short id, any unique prefix of it, a
-unique prefix of the full id, or the full id printed by \fB\-\-long\fR or
-\fBlist --ids\fR.
+\fBlist\fR shows the trailing hex characters of each item id, starting at
+eight and growing for very large stores so two displayed ids stay
+distinguishable. \fBrestore\fR, \fBempty\fR, and \fBwhere\fR accept that
+short id, any unique prefix of it, a unique prefix of the full id, or the full
+id printed by \fB\-\-long\fR or \fBlist --ids\fR.
 .SH SIZES
 \fBput\fR only moves the payload; the size of an item is measured the first
 time \fBlist\fR shows it and is then stored in the item metadata. The size is

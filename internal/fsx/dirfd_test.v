@@ -143,3 +143,82 @@ fn test_copy_child_tree_ignores_swapped_parent_symlink() ! {
 	assert os.read_file(os.join_path(dst, 'data'))! == 'real'
 	assert os.read_file(os.join_path(victim, 'data'))! == 'victim'
 }
+
+fn test_fd_is_regular_rejects_directories() ! {
+	root := dirfd_root('fd_regular')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	dir := open_dir(root)!
+	defer {
+		dir.close()
+	}
+	assert !fd_is_regular(dir.fd)
+
+	file := os.join_path(root, 'file')
+	os.write_file(file, 'x')!
+	fd := C.open(&char(file.str), C.O_RDONLY, 0)
+	assert fd >= 0
+	defer {
+		C.close(fd)
+	}
+	assert fd_is_regular(fd)
+}
+
+fn test_unsupported_fsync_errors_are_classified() {
+	assert is_unsupported_fsync_error(C.EINVAL)
+	assert is_unsupported_fsync_error(C.ENOTSUP)
+	assert !is_unsupported_fsync_error(C.EIO)
+	assert !is_unsupported_fsync_error(0)
+}
+
+fn test_measure_tree_does_not_follow_a_swapped_symlink() ! {
+	root := dirfd_root('measure_swap')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	item := os.join_path(root, 'item')
+	os.mkdir(item)!
+	os.write_file(os.join_path(item, 'data'), 'real')!
+	os.mkdir(os.join_path(item, 'sub'))!
+	os.write_file(os.join_path(item, 'sub', 'nested'), 'nested')!
+
+	victim := os.join_path(root, 'victim')
+	os.mkdir(victim)!
+	os.write_file(os.join_path(victim, 'data'), 'victim-data')!
+	os.mkdir(os.join_path(victim, 'sub'))!
+	os.write_file(os.join_path(victim, 'sub', 'nested'), 'victim-nested')!
+
+	dir := open_dir(item)!
+	defer {
+		dir.close()
+	}
+	assert dir.measure_tree(item)! == u64(4 + 6)
+
+	// Replace the real entries with symlinks to a directory outside the tree
+	// after the parent descriptor was opened. The walk must skip them instead
+	// of measuring the victim.
+	os.mv(os.join_path(item, 'data'), os.join_path(root, 'moved-data'))!
+	os.mv(os.join_path(item, 'sub'), os.join_path(root, 'moved-sub'))!
+	os.symlink(os.join_path(victim, 'data'), os.join_path(item, 'data'))!
+	os.symlink(os.join_path(victim, 'sub'), os.join_path(item, 'sub'))!
+
+	assert dir.measure_tree(item)! == 0
+}
+
+fn test_copy_path_sync_recreates_symlinks_without_following_them() ! {
+	root := dirfd_root('copy_path_symlink')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	outside := os.join_path(root, 'outside.txt')
+	os.write_file(outside, 'outside')!
+	src := os.join_path(root, 'link')
+	os.symlink(outside, src)!
+	dst := os.join_path(root, 'copy')
+
+	copy_path_sync(src, dst)!
+	assert os.is_link(dst)
+	assert os.readlink(dst)! == outside
+	assert !os.exists(os.join_path(root, 'copy.txt'))
+}

@@ -113,22 +113,6 @@ pub fn percent_decode_path(encoded string) !string {
 	return out.bytestr()
 }
 
-// resolve_name_conflict returns `base` or the first free `base~N` variant.
-pub fn resolve_name_conflict(base string) string {
-	if !os.exists(base) && !os.is_link(base) {
-		return base
-	}
-	mut counter := 1
-	for {
-		candidate := '${base}~${counter}'
-		if !os.exists(candidate) && !os.is_link(candidate) {
-			return candidate
-		}
-		counter++
-	}
-	return base
-}
-
 // check_trash_target rejects targets that are unsafe to move into the trash:
 // the root, the trash directory itself, its ancestors, or the current directory
 // and its ancestors.

@@ -230,7 +230,16 @@ The store is private by design:
   `0600` when the store is opened or a backup is written.
 - `items/`, `.gc/` and the lock file must be real files and
   directories, never symlinks. A symlinked item directory is reported as broken
-  and is never repaired, restored, or purged through.
+  and is never repaired, restored, or purged through. The lock file descriptor
+  is checked to be a regular file after `open(O_NOFOLLOW)`, so a directory or a
+  device node cannot silently stand in for it.
+- Store maintenance is descriptor-relative too: recovery, garbage collection,
+  item-directory removal, cross-device copies and size measurement open the
+  parent directory with `openat(O_DIRECTORY|O_NOFOLLOW)` and never follow a
+  symlink swapped in after validation. Residual risk: listing a directory still
+  uses its path, so a swapped path can make an operation miss entries (it
+  reports an unknown size or leaves the item for `doctor`) but cannot read or
+  delete outside the opened descriptor.
 - `put` and `restore` walk the parent directory one component at a time with
   `openat(O_DIRECTORY|O_NOFOLLOW)` and perform the final move with `renameat`
   relative to those descriptors, so a component swapped for a symlink between
@@ -313,6 +322,13 @@ database and are not disposable caches.
   guarantee.
 - The layout is intentionally not the Freedesktop Trash specification, so items
   do not appear in desktop file managers.
+- Permission checks inspect POSIX mode bits only. macOS ACLs that grant group
+  or other access are not read, so a store with `chmod 0700` but a permissive
+  ACL is accepted; this is a deliberate limitation, not a guarantee.
+- On network filesystems (NFS, SMB) `fsync` of a directory may be unsupported.
+  `trash` treats `EINVAL`/`ENOTSUP` from `fsync` as "not supported" instead of a
+  hard failure, so commands keep working, but metadata durability then depends
+  on the server's write-back policy.
 - Cross-filesystem moves preserve data and permissions, but not hardlinks,
   ACLs, xattrs, or timestamps.
 - Cross-device put can leave the source in place if source removal fails after a

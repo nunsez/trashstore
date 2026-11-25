@@ -136,7 +136,7 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 		// Nothing was moved yet; remove the empty item directories so a failed
 		// bulk insert does not leave orphans behind.
 		for p in prepared {
-			os.rmdir_all(p.item) or {}
+			s.remove_item_dir(p.entry.id) or {}
 		}
 		return classify_error(err, 'put', 'batch')
 	}
@@ -157,7 +157,7 @@ pub fn (s Store) put_many(paths []string, opts PutOptions) !PutBatch {
 				continue
 			}
 			s.delete_item(entry.id) or {}
-			os.rmdir_all(p.item) or {}
+			s.remove_item_dir(entry.id) or {}
 			batch.failures << batch_failure(entry.original_path, 'put', err)
 			continue
 		}
@@ -232,7 +232,7 @@ fn (s Store) put_locked(path string, opts PutOptions) !Entry {
 	id, item := s.create_item_dir()!
 	mut entry := new_put_entry(s, planned, id)
 	s.insert_item(entry.to_index_item()) or {
-		os.rmdir_all(item) or {}
+		s.remove_item_dir(id) or {}
 		return err
 	}
 
@@ -244,7 +244,7 @@ fn (s Store) put_locked(path string, opts PutOptions) !Entry {
 			return err
 		}
 		s.delete_item(id) or {}
-		os.rmdir_all(item) or {}
+		s.remove_item_dir(id) or {}
 		return err
 	}
 

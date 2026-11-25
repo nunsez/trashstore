@@ -338,7 +338,7 @@ fn parse_duration(value string) !i64 {
 	}
 	number := value[..value.len - 1]
 	unit := value[value.len - 1..]
-	amount := strconv.atoi(number) or {
+	amount := strconv.parse_int(number, 10, 64) or {
 		return error('invalid duration `${value}`; use e.g. 30d, 12h, 5m')
 	}
 	if amount < 0 {
@@ -354,5 +354,10 @@ fn parse_duration(value string) !i64 {
 			return error('invalid duration unit `${unit}`; use s, m, h, d or w')
 		}
 	}
-	return i64(amount) * multiplier
+	// parse_int already rejects a number that does not fit in i64, but
+	// multiplying by the unit can still overflow.
+	if amount > i64(9223372036854775807) / multiplier {
+		return error('duration `${value}` is too large')
+	}
+	return amount * multiplier
 }

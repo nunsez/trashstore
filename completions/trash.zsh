@@ -29,7 +29,18 @@ _trash() {
             _describe 'command' commands
             ;;
         args)
-            case $words[1] in
+            # The command is the first non-flag word, not necessarily words[1]:
+            # `trash --store x list` must complete `list`'s flags.
+            local command=""
+            local i=2
+            while (( i < CURRENT )); do
+                case $words[i] in
+                    --store) (( i += 2 )) ;;
+                    --store=*|-*) (( i++ )) ;;
+                    *) command=$words[i]; break ;;
+                esac
+            done
+            case $command in
                 list)
                     _arguments '(-r --recursive)'{-r,--recursive}'[include subtree]' \
                         '--all[list whole trash]' '--json[JSON output]' '--long[long output]' '--full-id[full ids]' \

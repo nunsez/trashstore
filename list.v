@@ -301,12 +301,31 @@ pub fn limit_entries(entries []Entry, limit int) []Entry {
 	return entries
 }
 
+// SizeFiller measures the entries whose size is still unknown.
+pub type SizeFiller = fn (entries []Entry) []Entry
+
+// identity_sizes is the SizeFiller for callers that already have sizes.
+pub fn identity_sizes(entries []Entry) []Entry {
+	return entries
+}
+
+// select_entries applies the predicates, optional size filling, ordering and
+// the limit to an already scoped list. It is the single implementation of the
+// selection tail shared by Store.list, filter_entries and the CLI: every caller
+// orders and limits through here, so the same filters always produce the same
+// set. Scope (cwd, targets) is applied by the caller because the CLI resolves
+// targets before it can filter.
+pub fn select_entries(entries []Entry, filter ListFilter, fill SizeFiller) []Entry {
+	filtered := filter_criteria(entries, filter)
+	measured := if filter.sort == 'size' { fill(filtered) } else { filtered }
+	return limit_entries(sort_entries(measured, filter.sort), filter.limit)
+}
+
 // filter_entries applies scope, predicates, ordering and the limit in that
 // order to an already scanned list.
 pub fn filter_entries(entries []Entry, filter ListFilter) []Entry {
 	scoped := filter_scope(entries, filter.cwd, filter.recursive, filter.all)
-	filtered := filter_criteria(scoped, filter)
-	return limit_entries(sort_entries(filtered, filter.sort), filter.limit)
+	return select_entries(scoped, filter, identity_sizes)
 }
 
 // list returns trashed items, optionally limited to the current directory or
@@ -328,7 +347,7 @@ pub fn (s Store) list(filter ListFilter) []Entry {
 		entries << item.to_entry()
 	}
 	measured := if filter.sort == 'size' { s.fill_sizes(entries) } else { entries }
-	return limit_entries(sort_entries(measured, filter.sort), filter.limit)
+	return select_entries(measured, filter, identity_sizes)
 }
 
 // short_id_matches reports whether ref is a prefix of the trailing hex part of

@@ -343,23 +343,6 @@ fn (s Store) all_items() ![]IndexItem {
 	return items
 }
 
-fn (s Store) trashed_items() ![]IndexItem {
-	mut db := s.conn()!
-	mut st := db.prepare('SELECT ${item_columns} FROM items WHERE state = ? ORDER BY id DESC')!
-	defer {
-		st.finalize()
-	}
-	st.bind_int(1, i64(EntryState.trashed.code()))!
-	mut items := []IndexItem{}
-	for {
-		if !st.step()! {
-			break
-		}
-		items << index_item_from_stmt(st)
-	}
-	return items
-}
-
 fn (s Store) pending_items() ![]IndexItem {
 	mut db := s.conn()!
 	mut st := db.prepare('SELECT ${item_columns} FROM items WHERE state != ? ORDER BY id')!

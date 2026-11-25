@@ -1,5 +1,6 @@
 module trash
 
+import internal.fsx
 import internal.sqlite
 import os
 
@@ -215,23 +216,19 @@ pub fn reset_store(root string) ! {
 	defer {
 		fl.release()
 	}
-	for name in [items_dirname, inflight_dirname, gc_dirname] {
-		path := os.join_path(resolved, name)
-		if os.is_link(path) {
-			os.rm(path)!
-			continue
-		}
-		if os.is_dir(path) {
-			os.rmdir_all(path)!
-		}
+	mut root_dir := fsx.open_dir(resolved)!
+	defer {
+		root_dir.close()
 	}
-	for name in [index_filename, '${index_filename}-wal', '${index_filename}-shm',
-		'${index_filename}-journal', backup_filename, '${backup_filename}.tmp', lock_filename] {
-		path := os.join_path(resolved, name)
-		if os.is_link(path) || os.exists(path) {
-			os.rm(path)!
-		}
+	// Remove every owned entry relative to the opened store directory. A
+	// symlink is unlinked without being followed, and a missing entry is not
+	// an error.
+	for name in [items_dirname, inflight_dirname, gc_dirname, index_filename, '${index_filename}-wal',
+		'${index_filename}-shm', '${index_filename}-journal', backup_filename,
+		'${backup_filename}.tmp', lock_filename] {
+		root_dir.remove_child_any(name, os.join_path(resolved, name))!
 	}
+	root_dir.sync(resolved)!
 }
 
 // close releases the index connection. It is idempotent: closing a copy of a

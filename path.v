@@ -24,10 +24,6 @@ pub fn percent_decode_path(encoded string) !string {
 	return pathx.percent_decode_path(encoded)
 }
 
-fn resolve_name_conflict(base string) string {
-	return pathx.resolve_name_conflict(base)
-}
-
 fn check_trash_target(target string, root string, cwd string) ! {
 	return pathx.check_trash_target(target, root, cwd)
 }

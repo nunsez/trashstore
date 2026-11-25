@@ -523,7 +523,9 @@ fn read_where_input(cli Cli) !WhereInput {
 	mut refs := []string{}
 	text := os.fd_slurp(0).join('')
 	for line in text.split_into_lines() {
-		ref := line.trim_space()
+		// Keep the reference byte-for-byte: a path may legitimately contain
+		// leading or trailing spaces. Only the CRLF line ending is stripped.
+		ref := line.trim_right('\r')
 		if ref != '' {
 			refs << ref
 		}
@@ -546,7 +548,6 @@ fn run_where(mut set StoreSet, cli Cli) ! {
 		eprintln(cli.palette().red('warning:') + ' ' + warning)
 	}
 	selected := trash.filter_criteria(resolution.entries, trash.ListFilter{
-		all:                true
 		kind:               cli.kind
 		grep:               cli.grep
 		older_than_seconds: cli.older_than_seconds

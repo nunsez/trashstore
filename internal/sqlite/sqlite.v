@@ -40,8 +40,6 @@ const open_nofollow = 0x01000000
 fn C.sqlite3_open_v2(&char, &&C.sqlite3, i32, &char) i32
 fn C.sqlite3_close_v2(&C.sqlite3) i32
 fn C.sqlite3_errmsg(&C.sqlite3) &char
-fn C.sqlite3_errcode(&C.sqlite3) i32
-fn C.sqlite3_extended_errcode(&C.sqlite3) i32
 fn C.sqlite3_busy_timeout(&C.sqlite3, i32) i32
 fn C.sqlite3_exec(&C.sqlite3, &char, voidptr, voidptr, &&char) i32
 fn C.sqlite3_prepare_v2(&C.sqlite3, &char, i32, &&C.sqlite3_stmt, &&char) i32
@@ -59,7 +57,6 @@ fn C.sqlite3_column_name(&C.sqlite3_stmt, i32) &char
 fn C.sqlite3_column_bytes(&C.sqlite3_stmt, i32) i32
 fn C.sqlite3_column_count(&C.sqlite3_stmt) i32
 fn C.sqlite3_changes(&C.sqlite3) i32
-fn C.sqlite3_last_insert_rowid(&C.sqlite3) i64
 fn C.sqlite3_libversion() &char
 
 // Db is one connection. It must not be copied: closing both copies would
@@ -129,14 +126,6 @@ pub fn (db &Db) errmsg() string {
 	return unsafe { cstring_to_vstring(&char(C.sqlite3_errmsg(db.conn))) }
 }
 
-// errcode returns the extended result code of the last failed call.
-pub fn (db &Db) errcode() int {
-	if db.conn == unsafe { nil } {
-		return -1
-	}
-	return C.sqlite3_extended_errcode(db.conn)
-}
-
 fn (db &Db) error(code int, query string) IError {
 	suffix := if query == '' { '' } else { ' while running `${query}`' }
 	return error_with_code('sqlite error ${code}: ${db.errmsg()}${suffix}', code)
@@ -154,11 +143,6 @@ pub fn (db &Db) exec(query string) ! {
 // changes returns the number of rows changed by the last statement.
 pub fn (db &Db) changes() int {
 	return C.sqlite3_changes(db.conn)
-}
-
-// last_insert_rowid returns the rowid of the last successful insert.
-pub fn (db &Db) last_insert_rowid() i64 {
-	return C.sqlite3_last_insert_rowid(db.conn)
 }
 
 // version returns the SQLite library version, for diagnostics.

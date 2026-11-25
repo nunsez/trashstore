@@ -5,12 +5,27 @@ _trash() {
     local commands="put list restore empty where stats doctor help version"
     local global_opts="--store --verbose --no-color --reset-store -h --help -V --version"
 
-    if [[ $cword -eq 1 ]]; then
+    # The command is the first non-flag word, not necessarily words[1]:
+    # `trash --store x list` must complete `list`'s flags.
+    if [[ "${words[cword-1]}" == "--store" || "$cur" == --store=* ]]; then
+        _filedir -d
+        return
+    fi
+    local command="" i
+    for (( i = 1; i < cword; i++ )); do
+        case "${words[i]}" in
+            --store) (( i++ )) ;;
+            --store=*|-*) ;;
+            *) command="${words[i]}"; break ;;
+        esac
+    done
+
+    if [[ -z "$command" ]]; then
         COMPREPLY=( $(compgen -W "$commands $global_opts" -- "$cur") )
         return
     fi
 
-    case "${words[1]}" in
+    case "$command" in
         list)
             COMPREPLY=( $(compgen -W "--recursive --all --json --long --full-id --ids --limit --sort --kind --grep --older-than --no-size $global_opts" -- "$cur") )
             ;;

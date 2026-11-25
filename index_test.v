@@ -105,7 +105,7 @@ fn test_index_lists_by_state() {
 	}
 	all := store.all_items()!
 	assert all.len == 3
-	trashed := store.trashed_items()!
+	trashed := all.filter(it.state == .trashed)
 	assert trashed.len == 1
 	assert trashed[0].id == 'b'
 	pending := store.pending_items()!
