@@ -176,7 +176,17 @@ fn (s Store) move_restore_data_cross(entry_id string, src fsx.Dir, dst fsx.Dir, 
 	}
 	// Record that the temporary copy belongs to this item before creating it.
 	// Recovery only removes a temp path whose marker matches, so a crafted
-	// restore_to cannot make it delete an unrelated file.
+	// restore_to cannot make it delete an unrelated file. A marker left by a
+	// crashed attempt of this same item is stale and ours to remove; a marker
+	// that names another item is never touched.
+	if dst.child_exists(marker_name) {
+		existing := dst.read_child(marker_name, 256) or { '' }
+		if existing != entry_id {
+			return error_with_code('restore marker `${marker}` belongs to another item',
+				fsx.eexist)
+		}
+		dst.remove_child_any(marker_name, marker)!
+	}
 	dst.write_child_new(marker_name, entry_id)!
 	defer {
 		// The temporary name did not exist before this copy, so everything below

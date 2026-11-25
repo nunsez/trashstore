@@ -167,7 +167,9 @@ fn (s Store) secure_index_files() {
 }
 
 // open_index opens index.db, applies connection pragmas and pending migrations.
-fn (s Store) open_index() !sqlite.Db {
+// With create disabled an index that has no schema at all is refused before any
+// pragma can write a header, so create:false really does not initialize it.
+fn (s Store) open_index(create bool) !sqlite.Db {
 	path := s.index_path()
 	if os.is_link(path) {
 		return invalid_target_error('index file `${path}` must not be a symlink')
@@ -202,6 +204,22 @@ fn (s Store) open_index() !sqlite.Db {
 		}
 	}
 	mut db := sqlite.open_nofollow(path) or { return map_index_error(err, path) }
+	if !create {
+		version := index_schema_version(mut db) or {
+			db.close()
+			return map_index_error(err, path)
+		}
+		if version == 0 {
+			fresh := index_is_fresh(mut db) or {
+				db.close()
+				return map_index_error(err, path)
+			}
+			if fresh {
+				db.close()
+				return not_found_error('index `${path}` has no schema; open the store with create enabled')
+			}
+		}
+	}
 	s.secure_index_files()
 	s.prepare_index(mut db) or {
 		db.close()

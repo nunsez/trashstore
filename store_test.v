@@ -3296,3 +3296,52 @@ fn test_cross_restore_failure_leaves_no_temp_or_marker() {
 		assert !name.contains('trash-tmp'), 'leftover temporary entry `${name}`'
 	}
 }
+
+fn test_open_with_can_refuse_uninitialized_index() {
+	root := core_dir('open_no_create_index')
+	defer {
+		core_cleanup(root)
+	}
+	store_path := os.join_path(root, 'trash')
+	os.mkdir(store_path, mode: 0o700) or { panic(err) }
+	os.mkdir(os.join_path(store_path, items_dirname), mode: 0o700) or { panic(err) }
+	os.mkdir(os.join_path(store_path, gc_dirname), mode: 0o700) or { panic(err) }
+	os.write_file(os.join_path(store_path, index_filename), '') or { panic(err) }
+
+	// create:false must not initialize the schema of an index that has none.
+	mut failed := false
+	open_with(store_path, create: false) or { failed = true }
+	assert failed
+
+	// create:true still initializes it normally.
+	store := open(store_path) or { panic(err) }
+	assert store.count_items() == 0
+}
+
+fn test_cross_restore_removes_stale_marker() {
+	root := core_dir('cross_restore_stale_marker')
+	defer {
+		core_cleanup(root)
+	}
+	store := open(os.join_path(root, 'trash')) or { panic(err) }
+	file := os.join_path(root, 'a.txt')
+	core_write(file, 'hello')
+	entry := core_put(store, file, false)
+	target_parent := os.join_path(root, 'restore')
+	os.mkdir(target_parent, mode: 0o700) or { panic(err) }
+	stale_marker := os.join_path(target_parent, 'a.txt.trash-tmp-${entry.id}.owner')
+	os.write_file(stale_marker, entry.id) or { panic(err) }
+
+	mut src := fsx.open_dir(store.item_dir(entry.id))!
+	defer {
+		src.close()
+	}
+	mut dst := fsx.open_dir(target_parent)!
+	defer {
+		dst.close()
+	}
+	mut item := store.get_item(entry.id)!
+	store.move_restore_data_cross(entry.id, src, dst, target_parent, 'a.txt', mut item)!
+	assert os.exists(os.join_path(target_parent, 'a.txt'))
+	assert !os.exists(stale_marker)
+}

@@ -385,11 +385,16 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 		emptied_by_root[root] = batch.emptied
 		failures << batch.failures
 	}
+	mut purged_any := false
 	if cli.include_broken {
 		// doctor --purge detaches broken item directories into .gc and cleans up.
 		for root in set.roots {
 			store := set.stores[root] or { continue }
 			report := store.doctor(purge: true)!
+			if report.purged > 0 {
+				// doctor already collected .gc, including the payloads emptied above.
+				purged_any = true
+			}
 			for item in report.items {
 				if item.action != 'purged' {
 					set.diag.warn('could not remove broken item ${broken_id_label(item.id)}: ${item.reason} (${item.action})')
@@ -410,7 +415,7 @@ fn run_empty(mut set StoreSet, cli Cli, cwd string) ! {
 	if cli.json {
 		println(json2.encode(EmptyReport{ emptied: emptied }, escape_unicode: true))
 	} else {
-		println(empty_result_message(emptied, cli.wait))
+		println(empty_result_message(emptied, cli.wait || purged_any))
 	}
 	if failures.len > 0 {
 		for failure in failures {

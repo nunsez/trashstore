@@ -23,6 +23,38 @@ pub fn remove_any(path string) ! {
 fn C.read(fd int, buf voidptr, count u64) i64
 fn C.write(fd int, buf voidptr, count u64) i64
 
+// read_regular_head opens a regular file read-only and returns at most
+// max_bytes of its content. The final component is opened with O_NOFOLLOW and
+// O_NONBLOCK, and the opened descriptor is checked to be a regular file: a path
+// swapped for a symlink, a FIFO or a device after validation cannot make the
+// caller follow it, block on it or read it. It returns none for anything that
+// is not a regular file.
+pub fn read_regular_head(path string, max_bytes int) ?string {
+	fd := C.open(&char(path.str), C.O_RDONLY | C.O_NONBLOCK | C.O_NOFOLLOW | C.O_CLOEXEC, 0)
+	if fd < 0 {
+		return none
+	}
+	defer {
+		C.close(fd)
+	}
+	if !fd_is_regular(fd) {
+		return none
+	}
+	mut buf := []u8{len: max_bytes}
+	mut n := i64(0)
+	for {
+		n = C.read(fd, buf.data, u64(max_bytes))
+		if n < 0 && C.errno == C.EINTR {
+			continue
+		}
+		break
+	}
+	if n < 0 {
+		return none
+	}
+	return buf[..int(n)].bytestr()
+}
+
 // copy_fds_sync copies between already-open descriptors. It never touches a
 // path, so it can be used by dirfd-relative callers that must not follow a
 // symlink swapped in after validation.

@@ -1,7 +1,7 @@
 module trashcli
 
+import internal.fsx
 import os
-import trash
 
 // print_preview_info describes a put target before the confirmation prompt. The
 // target path, symlink target, directory entries and file contents all come
@@ -30,19 +30,28 @@ fn print_preview_info(target string) {
 		println('${display}: unreadable')
 		return
 	}
-	println('${display}: ${trash.detect_kind(target).label()}, ${st.size} bytes')
-	mut f := os.open(target) or { return }
-	mut buf := []u8{len: 4096}
-	n := f.read(mut buf) or { 0 }
-	f.close()
-	text := buf[..n].bytestr()
-	if text.contains('\x00') {
-		println('  > binary data')
+	kind := st.get_filetype()
+	label := if kind == .regular { 'file' } else { '${kind}' }
+	println('${display}: ${label}, ${st.size} bytes')
+	if kind != .regular {
+		// A FIFO or a device would block or consume data if opened; report the
+		// type and leave the content alone.
 		return
+	}
+	for line in preview_file_lines(target) {
+		println('  > ${sanitize_display(line)}')
+	}
+}
+
+// preview_file_lines returns the first lines of a regular file for --preview.
+// The read is descriptor-relative and refuses anything that is not a regular
+// file, so a path swapped for a FIFO or a device cannot block the prompt.
+fn preview_file_lines(target string) []string {
+	text := fsx.read_regular_head(target, 4096) or { return []string{} }
+	if text.contains('\x00') {
+		return ['binary data']
 	}
 	lines := text.split_into_lines()
 	limit := if lines.len > 20 { 20 } else { lines.len }
-	for line in lines[..limit] {
-		println('  > ${sanitize_display(line)}')
-	}
+	return lines[..limit]
 }

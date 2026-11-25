@@ -214,7 +214,7 @@ pub fn open_with(root string, opts StoreOptions) !&Store {
 		}
 	}
 	s.db = &StoreDb{
-		db: s.open_index()!
+		db: s.open_index(opts.create)!
 	}
 	fl.release()
 	return s

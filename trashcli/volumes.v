@@ -181,11 +181,16 @@ fn write_volume_records(home_root string, records []VolumeRecord) ! {
 	tmp := '${path}.tmp-${os.getpid()}'
 	os.write_file(tmp, content)!
 	mut f := os.open(tmp)!
+	mut renamed := false
 	defer {
 		f.close()
+		if !renamed {
+			os.rm(tmp) or {}
+		}
 	}
 	fsx.fsync_fd(f.fd, tmp)!
 	os.rename(tmp, path)!
+	renamed = true
 	fsx.fsync_dir(home_root)!
 }
 

@@ -9,6 +9,12 @@ import trash
 fn C.dup(fd int) int
 fn C.dup2(oldfd int, newfd int) int
 
+$if macos {
+	fn C.mkfifo(path &char, mode u16) int
+} $else {
+	fn C.mkfifo(path &char, mode u32) int
+}
+
 fn cli_dir(name string) string {
 	dir := pathx.canonical_path(os.join_path(os.temp_dir(), 'v_trash_cli_${os.getpid()}_${name}'))
 	os.rmdir_all(dir) or {}
@@ -1401,4 +1407,29 @@ fn test_scan_total_counts_entries_and_broken() {
 		]
 	}
 	assert scan_total(scan) == 3
+}
+
+fn test_preview_does_not_open_special_files() {
+	root := cli_dir('preview_special')
+	defer {
+		cli_cleanup(root)
+	}
+	regular := os.join_path(root, 'a.txt')
+	cli_write(regular, 'hello\n')
+	assert preview_file_lines(regular) == ['hello']
+	binary := os.join_path(root, 'bin')
+	os.write_file(binary, 'a\x00b') or { panic(err) }
+	assert preview_file_lines(binary) == ['binary data']
+	fifo := os.join_path(root, 'pipe')
+	$if macos {
+		if C.mkfifo(&char(fifo.str), u16(0o600)) != 0 {
+			panic('cannot create fifo: ${os.get_error_msg(C.errno)}')
+		}
+	} $else {
+		if C.mkfifo(&char(fifo.str), u32(0o600)) != 0 {
+			panic('cannot create fifo: ${os.get_error_msg(C.errno)}')
+		}
+	}
+	// Must return instead of blocking in open(2) on the FIFO.
+	assert preview_file_lines(fifo) == []string{}
 }

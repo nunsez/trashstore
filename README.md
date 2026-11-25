@@ -213,6 +213,12 @@ Errors are `TrashError` with an `ErrorKind`. Use `scan()`, `stats()`, and the
 `Entry.size_known` is true; call `fill_size(entry)` or `fill_sizes(entries)` to
 measure unknown sizes and persist them in the item metadata.
 
+`list()` applies `cwd`/`kind`/`grep`/`older-than`/`sort`/`limit` in SQL and is
+the filtered view for library callers; it skips broken rows. `scan()` reads
+every row and every payload, so it is the only view that reports corrupt rows,
+wrong states and orphan payloads. The CLI uses `scan()` deliberately: it must
+warn about broken items even when a filter would hide them.
+
 `open()` returns a `&Store`. Do not copy a `Store` by value: copies share one
 SQLite connection, `close()` on any copy closes the store for all of them, and
 later operations return a "store is closed" error. Use one `Store` per thread;
